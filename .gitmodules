@@ -1,0 +1,3 @@
+[submodule "apps/contracts/lib/sx-evm"]
+	path = apps/contracts/lib/sx-evm
+	url = https://github.com/snapshot-labs/sx-evm
