@@ -1,4 +1,10 @@
 {
+  "lib/document-registry": {
+    "tag": {
+      "name": "v0.1.0-pre",
+      "rev": "d0bf1c48ad75254edcdef6b1bcb703bab27fe815"
+    }
+  },
   "lib/sx-evm": {
     "tag": {
       "name": "v1.0.3",

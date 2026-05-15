@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getClient } from '$lib/services/ethereum';
+	import { getClient } from '$lib/services/wallet-config';
 	import { daaTokenAddress } from '$lib/contracts';
-	import { parseAbiItem } from 'viem';
-	import { getPaginatedLogs, getCachedMembers, setCachedMembers, type PaginatedLogsResult } from '$lib/services/logs';
+	import { parseAbiItem, type PublicClient } from 'viem';
+	import { getPaginatedLogs } from '$lib/services/event-log-scanner';
 
 	const deployBlock = BigInt(import.meta.env.VITE_DEPLOY_BLOCK || '0');
 
@@ -27,25 +27,26 @@
 
 	async function loadMembers() {
 		try {
-			const client = getClient();
+			// Cast to bare PublicClient — the multi-chain wallet config returns
+			// a union of chain-narrowed clients (Optimism's OP-stack tx types
+			// don't unify with standard chains), but getPaginatedLogs only needs
+			// the unparameterised shape.
+			const client = getClient() as unknown as PublicClient | undefined;
 			if (!client) {
 				error = 'No RPC client available';
 				return;
 			}
 
-			const cached = getCachedMembers();
-			const fromBlock = cached ? BigInt(cached.lastBlock) + 1n : deployBlock;
-
 			const [mintResult, burnResult] = await Promise.all([
 				getPaginatedLogs(client, {
 					address: daaTokenAddress,
 					event: mintEvent,
-					fromBlock
+					fromBlock: deployBlock
 				}, 'members:mint'),
 				getPaginatedLogs(client, {
 					address: daaTokenAddress,
 					event: burnEvent,
-					fromBlock
+					fromBlock: deployBlock
 				}, 'members:burn')
 			]);
 
@@ -53,26 +54,14 @@
 				console.warn('[members] Scan incomplete — showing partial results');
 			}
 
-			const allMinted = [
-				...(cached?.minted ?? []),
-				...mintResult.logs.map((log: any) => ({
-					address: log.args.to as string,
-					tokenId: log.args.tokenId.toString()
-				}))
-			];
+			const allMinted = mintResult.logs.map((log: any) => ({
+				address: log.args.to as string,
+				tokenId: log.args.tokenId.toString()
+			}));
 
-			const allBurned = new Set([
-				...(cached?.burned ?? []),
-				...burnResult.logs.map((log: any) => log.args.tokenId.toString())
-			]);
-
-			const lastBlock = mintResult.lastScannedBlock < burnResult.lastScannedBlock
-				? mintResult.lastScannedBlock : burnResult.lastScannedBlock;
-			setCachedMembers({
-				lastBlock: lastBlock.toString(),
-				minted: allMinted,
-				burned: [...allBurned]
-			});
+			const allBurned = new Set(
+				burnResult.logs.map((log: any) => log.args.tokenId.toString())
+			);
 
 			members = allMinted
 				.filter((m) => !allBurned.has(m.tokenId))

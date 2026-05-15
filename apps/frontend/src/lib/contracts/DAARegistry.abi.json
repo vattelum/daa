@@ -49,7 +49,7 @@
             "internalType": "uint256"
           },
           {
-            "name": "arweaveTxId",
+            "name": "contentUri",
             "type": "string",
             "internalType": "string"
           },
@@ -78,7 +78,7 @@
       {
         "name": "refs",
         "type": "tuple[]",
-        "internalType": "struct DAARegistry.ExternalReference[]",
+        "internalType": "struct DocumentReference[]",
         "components": [
           {
             "name": "registryAddress",
@@ -116,6 +116,119 @@
             "internalType": "string"
           }
         ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "documentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "version",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "addDocumentWithRestrictions",
+    "inputs": [
+      {
+        "name": "input",
+        "type": "tuple",
+        "internalType": "struct DAARegistry.DocumentInput",
+        "components": [
+          {
+            "name": "categoryId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "documentId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "contentUri",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "contentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "voteId",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "docType",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      },
+      {
+        "name": "refs",
+        "type": "tuple[]",
+        "internalType": "struct DocumentReference[]",
+        "components": [
+          {
+            "name": "registryAddress",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "chainId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "categoryId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "documentId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "version",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "relationType",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "targetSection",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
+      },
+      {
+        "name": "minTimeBetweenAmendments",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lockedSections",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
       }
     ],
     "outputs": [
@@ -235,10 +348,10 @@
       {
         "name": "",
         "type": "tuple",
-        "internalType": "struct DAARegistry.Document",
+        "internalType": "struct Document",
         "components": [
           {
-            "name": "arweaveTxId",
+            "name": "contentUri",
             "type": "string",
             "internalType": "string"
           },
@@ -315,10 +428,10 @@
       {
         "name": "",
         "type": "tuple[]",
-        "internalType": "struct DAARegistry.Document[]",
+        "internalType": "struct Document[]",
         "components": [
           {
-            "name": "arweaveTxId",
+            "name": "contentUri",
             "type": "string",
             "internalType": "string"
           },
@@ -376,10 +489,10 @@
       {
         "name": "",
         "type": "tuple",
-        "internalType": "struct DAARegistry.Document",
+        "internalType": "struct Document",
         "components": [
           {
-            "name": "arweaveTxId",
+            "name": "contentUri",
             "type": "string",
             "internalType": "string"
           },
@@ -442,7 +555,7 @@
       {
         "name": "",
         "type": "tuple[]",
-        "internalType": "struct DAARegistry.ExternalReference[]",
+        "internalType": "struct DocumentReference[]",
         "components": [
           {
             "name": "registryAddress",
@@ -655,7 +768,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "arweaveTxId",
+        "name": "contentUri",
         "type": "string",
         "indexed": false,
         "internalType": "string"
@@ -693,6 +806,27 @@
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AmendmentTooSoon",
+    "inputs": [
+      {
+        "name": "categoryId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "documentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "earliestAllowed",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -735,6 +869,27 @@
     "type": "error",
     "name": "NotCoreAuthority",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SectionLocked",
+    "inputs": [
+      {
+        "name": "categoryId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "documentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lockedSection",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

@@ -1,13 +1,11 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { marked } from 'marked';
-	import DOMPurify from 'dompurify';
 	import {
 		type Section,
 		createSection,
 		computeSectionNumber,
 		sectionsToMarkdown,
-		wrapSections,
+		renderSectionedMarkdown,
 		collectAllNumbers,
 		nextChildNumber,
 		nextSiblingNumber,
@@ -37,8 +35,10 @@
 
 	async function togglePreview() {
 		if (!preview) {
-			const md = sectionsToMarkdown(sections);
-			previewHtml = DOMPurify.sanitize(wrapSections(await marked.parse(md)));
+			// No cache key — the editor body changes on every keystroke, so caching
+			// the rendered HTML would be wrong. The shared helper handles the
+			// marked + DOMPurify + section-wrap pipeline; we just skip the cache.
+			previewHtml = await renderSectionedMarkdown(sectionsToMarkdown(sections));
 		}
 		preview = !preview;
 	}

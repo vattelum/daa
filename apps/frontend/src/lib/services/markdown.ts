@@ -1,3 +1,100 @@
+import { marked, Marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+// ──────────────── Markdown Safety (Layer 1 + Layer 2) ────────────────
+//
+// Layer 1: configure the global `marked` singleton to escape inline HTML
+// at parse time. `<script>alert(1)</script>` in a markdown body becomes
+// the literal text `&lt;script&gt;alert(1)&lt;/script&gt;` rather than
+// executable HTML. Markdown formatting (links, lists, bold, code,
+// headings, blockquotes, tables) is unaffected.
+//
+// Configured here, at module load. `+layout.svelte` side-effect imports
+// this module so the config runs before any `marked.parse` call in the
+// app, including those in print.ts that don't transitively import
+// markdown.ts.
+
+function escapeHtml(s: string): string {
+	return s
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+marked.use({
+	renderer: {
+		html(token: any) {
+			const raw = typeof token === 'string' ? token : (token.text ?? token.raw ?? '');
+			return escapeHtml(raw);
+		}
+	}
+});
+
+// Layer 2: dedicated `Marked` instance for upload-time validation. Uses
+// default (HTML-passthrough) parsing so DOMPurify actually has work to do
+// — the global singleton already escapes at parse time, which would make
+// validation a no-op against itself.
+
+const validatorMarked = new Marked();
+
+export class MarkdownUnsafeError extends Error {
+	constructor() {
+		super(
+			'Your document contains script content or unsafe URL schemes ' +
+				'(javascript:, embedded <script>, on-event handlers) and cannot be ' +
+				'stored. Please remove these and try again.'
+		);
+		this.name = 'MarkdownUnsafeError';
+	}
+}
+
+/**
+ * Throws `MarkdownUnsafeError` if the body contains content DOMPurify
+ * would strip. Call before any Arweave upload of user-authored markdown.
+ *
+ * Single source of truth — every upload site (`/propose` submit,
+ * `/contract` create) routes through this helper rather than rolling
+ * its own validation.
+ *
+ * Two complementary checks:
+ *
+ *   1. Raw-body sanitize. Catches HTML embedded directly in the
+ *      markdown source (e.g. `<script>`, `<img onerror=…>`, `<iframe>`)
+ *      without depending on marked's parse path. Some marked versions
+ *      silently strip or transform `<script>` blocks during parsing,
+ *      which would leave DOMPurify with nothing to remove and let the
+ *      payload slip through. Sanitising the raw string short-circuits
+ *      that risk — DOMPurify treats any `<…>` substring in the body
+ *      as HTML to inspect, regardless of markdown semantics.
+ *
+ *   2. Parsed-body sanitize. Catches markdown-specific attack vectors
+ *      that only become HTML after parsing — most importantly
+ *      dangerous URL schemes inside markdown links: `[text](javascript:…)`.
+ *      Without parsing, DOMPurify just sees brackets and parens.
+ *
+ * Detection signal in both passes: `DOMPurify.removed` — the
+ * authoritative list of nodes and attributes the sanitizer stripped on
+ * the most recent `.sanitize()` call. We do NOT compare parsed-vs-
+ * sanitized strings; DOMPurify normalises clean HTML (attribute
+ * quoting, entity encoding, whitespace), which makes byte equality a
+ * source of false positives.
+ */
+export async function validateMarkdownUpload(body: string): Promise<void> {
+	// Check 1: raw body.
+	DOMPurify.sanitize(body);
+	if (DOMPurify.removed.length > 0) {
+		throw new MarkdownUnsafeError();
+	}
+	// Check 2: marked-parsed body.
+	const parsed = await validatorMarked.parse(body);
+	DOMPurify.sanitize(parsed);
+	if (DOMPurify.removed.length > 0) {
+		throw new MarkdownUnsafeError();
+	}
+}
+
 export interface Section {
 	id: string;
 	depth: 1 | 2 | 3;
@@ -56,14 +153,15 @@ export function markdownToSections(markdown: string): Section[] {
 	let contentLines: string[] = [];
 
 	for (const line of lines) {
-		const match = line.match(/^(#{2,4})\s+§[\d.A-Z]+\s+(.*)/);
+		const match = line.match(/^(#{2,4})\s+§([\d.A-Z]+)\s+(.*)/);
 		if (match) {
 			if (current) {
 				current.content = contentLines.join('\n').trim();
 				sections.push(current);
 			}
 			current = createSection((match[1].length - 1) as 1 | 2 | 3);
-			current.title = match[2];
+			current.fixedNumber = match[2];
+			current.title = match[3];
 			contentLines = [];
 		} else if (current) {
 			contentLines.push(line);
@@ -78,8 +176,8 @@ export function markdownToSections(markdown: string): Section[] {
 	return sections;
 }
 
-export function buildDocument(frontmatter: Record<string, unknown>, sections: Section[]): string {
-	const yaml = Object.entries(frontmatter)
+function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
+	return Object.entries(frontmatter)
 		.map(([k, v]) => {
 			if (Array.isArray(v)) {
 				const items = v.map((item) => `  - "${item}"`).join('\n');
@@ -89,25 +187,77 @@ export function buildDocument(frontmatter: Record<string, unknown>, sections: Se
 			return `${k}: ${v}`;
 		})
 		.join('\n');
+}
 
-	const body = sectionsToMarkdown(sections);
-	return `---\n${yaml}\n---\n\n${body}\n`;
+/**
+ * Wrap a pre-rendered markdown body with YAML frontmatter.
+ * Single source of truth for the `---\n<yaml>\n---\n\n<body>\n` envelope;
+ * both `buildDocument()` and any ad-hoc body (e.g. Repeal notices that don't
+ * carry Section[]) route through here so the envelope format stays uniform.
+ */
+export function wrapWithFrontmatter(
+	frontmatter: Record<string, unknown>,
+	body: string,
+	rawYamlBlocks?: string
+): string {
+	const yaml = serializeFrontmatter(frontmatter);
+	const allYaml = rawYamlBlocks ? `${yaml}\n${rawYamlBlocks}` : yaml;
+	return `---\n${allYaml}\n---\n\n${body}\n`;
+}
+
+export function buildDocument(frontmatter: Record<string, unknown>, sections: Section[], rawYamlBlocks?: string): string {
+	return wrapWithFrontmatter(frontmatter, sectionsToMarkdown(sections), rawYamlBlocks);
 }
 
 export function parseDocument(text: string): {
 	frontmatter: Record<string, string>;
 	sections: Section[];
+	rawYamlBlocks?: string;
+	rawRoles?: string;
 } {
 	const fmMatch = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
 	if (!fmMatch) return { frontmatter: {}, sections: markdownToSections(text) };
 
+	const rawYaml = fmMatch[1];
 	const frontmatter: Record<string, string> = {};
-	for (const line of fmMatch[1].split('\n')) {
+	const lines = rawYaml.split('\n');
+
+	// Extract a top-level list block (e.g. variables: / roles:) —
+	// lines from "<key>:" until the next non-indented line.
+	const extractListBlock = (key: string): { block: string | undefined; start: number; end: number } => {
+		const start = lines.findIndex((l) => l.match(new RegExp(`^${key}:\\s*$`)));
+		if (start < 0) return { block: undefined, start: -1, end: -1 };
+		let end = lines.length;
+		for (let i = start + 1; i < lines.length; i++) {
+			if (lines[i].match(/^\S/) && !lines[i].startsWith(`${key}:`)) {
+				end = i;
+				break;
+			}
+		}
+		return { block: lines.slice(start, end).join('\n'), start, end };
+	};
+
+	const vars = extractListBlock('variables');
+	const roles = extractListBlock('roles');
+
+	// Rebuild simpleLines excluding any extracted list blocks.
+	const skip = new Set<number>();
+	for (const b of [vars, roles]) {
+		if (b.start < 0) continue;
+		for (let i = b.start; i < b.end; i++) skip.add(i);
+	}
+	const simpleLines = lines.filter((_, i) => !skip.has(i));
+	for (const line of simpleLines) {
 		const kv = line.match(/^(\w+):\s*"?([^"]*)"?$/);
 		if (kv) frontmatter[kv[1]] = kv[2];
 	}
 
-	return { frontmatter, sections: markdownToSections(fmMatch[2]) };
+	return {
+		frontmatter,
+		sections: markdownToSections(fmMatch[2]),
+		rawYamlBlocks: vars.block,
+		rawRoles: roles.block
+	};
 }
 
 // ──────────────── Amendment Mode Numbering ────────────────
@@ -208,7 +358,7 @@ export function sortByFixedNumber(sections: Section[]): Section[] {
 	});
 }
 
-function compareSectionNumbers(a: string, b: string): number {
+export function compareSectionNumbers(a: string, b: string): number {
 	const partsA = parseSectionNumber(a);
 	const partsB = parseSectionNumber(b);
 	for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
@@ -227,6 +377,34 @@ function parseSectionNumber(num: string): number[] {
 		// Letter: A=1, B=2, etc.
 		return part.charCodeAt(0) - 64;
 	});
+}
+
+/**
+ * Render a markdown string through marked → wrapSections → DOMPurify.
+ * Single pipeline used by /propose review modal, /vote proposal body, and the
+ * registry document viewer on /. Collapses what was three identical inline
+ * expressions into one call site.
+ *
+ * Optional `key` (e.g. on-chain contentHash) enables an in-memory tab-lifetime
+ * cache keyed by an immutable identifier. Re-expanding the same document on
+ * /vote or / skips the marked.parse + DOMPurify.sanitize pipeline entirely.
+ */
+const renderCache = new Map<string, string>();
+const RENDER_CACHE_MAX = 200;
+
+export async function renderSectionedMarkdown(md: string, key?: string): Promise<string> {
+	if (key && renderCache.has(key)) return renderCache.get(key)!;
+
+	const html = DOMPurify.sanitize(wrapSections(await marked.parse(md)));
+
+	if (key) {
+		renderCache.set(key, html);
+		if (renderCache.size > RENDER_CACHE_MAX) {
+			const firstKey = renderCache.keys().next().value;
+			if (firstKey) renderCache.delete(firstKey);
+		}
+	}
+	return html;
 }
 
 /**

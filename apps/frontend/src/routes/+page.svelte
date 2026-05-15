@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { readContract } from '@wagmi/core';
-	import { marked } from 'marked';
-	import DOMPurify from 'dompurify';
-	import { config } from '$lib/services/ethereum';
+	import { config } from '$lib/services/wallet-config';
 	import { daaRegistryConfig } from '$lib/contracts';
-	import { fetchFromArweave, arweaveUrl } from '$lib/services/arweave';
-	import { wrapSections } from '$lib/services/markdown';
+	import { fetchFromArweave } from '$lib/services/arweave';
+	import ContentUriLink from '$lib/components/ContentUriLink.svelte';
+	import { renderSectionedMarkdown } from '$lib/services/markdown';
 	import { loadCategories as fetchCategories, loadDocuments, loadAmendmentRestrictions } from '$lib/services/registry';
 	import Tooltip from '$lib/components/Tooltip.svelte';
-	import { docTypeLabel, relationLabel, RELATION_TYPES } from '$lib/constants/docTypes';
+	import { docTypeLabel, relationLabel, RELATION_AMENDS, RELATION_REVISES, RELATION_REPEALS, RELATION_CODIFIES } from '$lib/constants/docTypes';
+	import { formatDate, stripFrontmatter } from '$lib/services/format';
 
 	interface Reference {
 		registryAddress: string;
@@ -28,7 +28,7 @@
 	}
 
 	interface Version {
-		arweaveTxId: string;
+		contentUri: string;
 		contentHash: string;
 		title: string;
 		version: number;
@@ -102,20 +102,6 @@
 		return categoryColors[index % categoryColors.length];
 	}
 
-	function formatDate(timestamp: number) {
-		const d = new Date(timestamp * 1000);
-		const months = [
-			'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-			'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-		];
-		const day = String(d.getDate()).padStart(2, '0');
-		return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
-	}
-
-	function stripFrontmatter(content: string): string {
-		const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-		return match ? match[1].trim() : content;
-	}
 
 	async function loadCats() {
 		try {
@@ -190,7 +176,7 @@
 					functionName: 'getHistory',
 					args: [BigInt(cat.id), BigInt(doc.documentId)]
 				})) as Array<{
-					arweaveTxId: string;
+					contentUri: string;
 					contentHash: string;
 					title: string;
 					version: bigint;
@@ -200,7 +186,7 @@
 				}>;
 
 				const versions: Version[] = history.map((d) => ({
-					arweaveTxId: d.arweaveTxId,
+					contentUri: d.contentUri,
 					contentHash: d.contentHash,
 					title: d.title,
 					version: Number(d.version),
@@ -316,6 +302,11 @@
 		}
 	}
 
+	function isPartialRepeal(ver: Version): boolean {
+		if (ver.docType !== 3) return false;
+		return ver.references.some((r) => r.relationType === RELATION_REPEALS && r.targetSection.trim() !== '');
+	}
+
 	/** Compute display labels for versions: Originals/Revisions get version numbers, Amendments get amendment numbers */
 	function computeDisplayLabels(versions: Version[]): Map<number, string> {
 		const labels = new Map<number, string>();
@@ -333,8 +324,8 @@
 				amendmentCount++;
 				labels.set(ver.version, `Amendment ${amendmentCount}`);
 			} else if (ver.docType === 3) {
-				// Repeal
-				labels.set(ver.version, 'Repeal');
+				// Repeal — distinguish partial from full based on outgoing ref's targetSection
+				labels.set(ver.version, isPartialRepeal(ver) ? 'Partial Repeal' : 'Repeal');
 			} else if (ver.docType === 4) {
 				// Codification — shouldn't appear here (new doc), but handle gracefully
 				currentVersion++;
@@ -365,24 +356,24 @@
 
 	function isSuperseded(ver: Version): boolean {
 		return ver.incomingRefs.some(
-			(r) => (r.relationType === RELATION_TYPES.REPEALS && !r.targetSection) ||
-				r.relationType === RELATION_TYPES.REVISES
+			(r) => (r.relationType === RELATION_REPEALS && !r.targetSection) ||
+				r.relationType === RELATION_REVISES
 		);
 	}
 
 	function incomingRefLabel(ref: IncomingRef, displayLabels: Map<number, string>): string {
 		const label = displayLabels.get(ref.fromVersion) ?? `v${ref.fromVersion}`;
-		if (ref.relationType === RELATION_TYPES.AMENDS) {
+		if (ref.relationType === RELATION_AMENDS) {
 			return ref.targetSection ? `\u00A7${ref.targetSection} amended by ${label}` : `Amended by ${label}`;
 		}
-		if (ref.relationType === RELATION_TYPES.REPEALS) {
-			if (ref.targetSection) return `\u00A7${ref.targetSection} repealed by ${label}`;
-			return `Repealed by ${label}`;
+		if (ref.relationType === RELATION_REPEALS) {
+			if (ref.targetSection) return `\u00A7${ref.targetSection} repealed`;
+			return 'Repealed';
 		}
-		if (ref.relationType === RELATION_TYPES.REVISES) {
+		if (ref.relationType === RELATION_REVISES) {
 			return `Replaced by ${label}`;
 		}
-		if (ref.relationType === RELATION_TYPES.CODIFIES) {
+		if (ref.relationType === RELATION_CODIFIES) {
 			return `Codified in ${label}`;
 		}
 		return `Referenced by ${label}`;
@@ -421,9 +412,9 @@
 		categories[loc.catIdx] = { ...categories[loc.catIdx], documents: updatedDocs };
 
 		try {
-			const text = await fetchFromArweave(ver.arweaveTxId, ver.contentHash);
+			const text = await fetchFromArweave(ver.contentUri, ver.contentHash);
 			const body = stripFrontmatter(text);
-			const html = DOMPurify.sanitize(wrapSections(await marked.parse(body)));
+			const html = await renderSectionedMarkdown(body, ver.contentHash);
 
 			const current = findVersion(categoryId, documentId, version);
 			if (current) {
@@ -551,7 +542,7 @@
 																				<span class="text-sm {isSuperseded(ver) ? 'line-through text-text-muted' : ''}">{ver.title}</span>
 																			{/if}
 																			{#if ver.docType !== 0}
-																				<span class="text-xs px-1.5 py-0.5 rounded bg-bg-lighter text-text-muted">{docTypeLabel(ver.docType)}</span>
+																				<span class="text-xs px-1.5 py-0.5 rounded bg-bg-lighter text-text-muted">{isPartialRepeal(ver) ? 'Partial Repeal' : docTypeLabel(ver.docType)}</span>
 																			{/if}
 																			{#each ver.incomingRefs as iref}
 																				<span class="text-xs px-1.5 py-0.5 rounded bg-bg-lighter text-text-secondary">{incomingRefLabel(iref, displayLabels)}</span>
@@ -584,7 +575,7 @@
 																				{@html ver.htmlContent}
 																			</div>
 																			<div class="mt-3 pt-3 border-t border-border flex items-center justify-between">
-																				<span class="text-xs text-text-muted">Arweave TX: <a href={arweaveUrl(ver.arweaveTxId)} target="_blank" rel="noopener noreferrer" class="font-mono text-primary hover:underline">{ver.arweaveTxId}</a></span>
+																				<span class="text-xs text-text-muted">Content URI: <ContentUriLink uri={ver.contentUri} /></span>
 																				<button
 																					onclick={copyMarkdown}
 																					class="text-xs px-3 py-1 rounded border border-border hover:bg-bg-lighter text-text-muted hover:text-text transition-colors cursor-pointer"

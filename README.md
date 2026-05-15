@@ -2,10 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.31-363636.svg)](https://soliditylang.org)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-113_passing-brightgreen.svg)](https://getfoundry.sh)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-133_passing-brightgreen.svg)](https://getfoundry.sh)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-Frontend-FF3E00.svg)](https://kit.svelte.dev)
 
-The Decentralized Autonomous Association (DAA) gives any group of independent persons—whether a blockchain project, an industry body, a standards committee, a professional association, or any other voluntary decentralized collective—a tool to collaboratively create, vote on, and ratify standards and shared principles using blockchain technology.
+The Decentralized Autonomous Association (DAA) is a tool for decentralized law-making.
+
+It gives any group of independent persons—whether a blockchain project, an industry body, a standards committee, a professional association, or any other voluntary decentralized collective—a tool to collaboratively create, vote on, and ratify standards and shared principles using blockchain technology.
 
 No single person controls the laws of a DAA registry. Every decision is made through on-chain voting.
 
@@ -17,9 +19,9 @@ https://github.com/user-attachments/assets/1bf747e9-978a-4c2d-82b7-f28c50b30505
 
 ## Why do we need a DAA?
 
-Most blockchain governance tools are built for DAOs, decentralized organizations that pool capital, issue tradable tokens, and share financial risk. While this led to innovations, there are problems with this model.
+Most blockchain governance tools are built for DAOs, decentralized organizations that pool capital, issue tradable tokens, and share financial risk. While this led to innovations, this model has problems.
 
-First, many core DAO activities—raising money from the public, creating monetary instruments, and pooling capital—are regulated activities. As such, regulators cracked down on DAOs.
+First, many core DAO activities—raising public funds, creating monetary instruments, and pooling capital—are regulated activities. As such, regulators cracked down on DAOs.
 
 Second, the DAO concept presupposes the "American startup" as the key form of human organization (raising money in order to build technology). Most human affairs are not governed by startups.
 
@@ -27,9 +29,11 @@ The most important problem of DAOs, however, is that they do not have legal pers
 
 **How is the DAA different?**
 
-The DAA takes a different approach. It specifically is NOT an organization. There are no funds to manage, no financial products, no shared liability, and no regulatory exposure. Because the DAA does not act as an organization, legally, everybody in the DAA is separate.
+The DAA takes a different approach. It specifically is NOT an organization. There are no funds to manage, no financial products, no shared liability, and no regulatory exposure. Because the DAA does not act as an organization, legally, participants do not get legally entangled.
 
-The DAA is just a governance tool. It allows people from around the world to come together to work on shared laws and principles. Legal force comes from the consent of the participants, either through terms and conditions that create a consensus jurisdiction, or through contracts entered into under laws ratified by the association.
+The DAA is just a voluntary standardization and legislation tool. It allows people to work on shared laws and principles. Legal force comes from the consent of the participants, either through terms and conditions that create a consensus jurisdiction, or through contracts entered into by the participants.
+
+**The DAA registry**
 
 The DAA's core output is its registry, an Ethereum smart contract that records every ratified document with its title, category, version, content hash, and a permanent Arweave link. Documents are organized into categories (e.g., "Governing Laws", "Chain Standards", "Model Agreements") and evolve through a full legislative lifecycle: Originals, Amendments, Revisions, Repeals, and Codifications.
 
@@ -39,21 +43,25 @@ Unlike the [BVS](https://github.com/vattelum/bvs) (Blockchain Voting System), wh
 
 ## How It Works
 
-Anyone can fork this repository and deploy their own legislative framework, choosing the categories of law, the approval thresholds for normal and core proposals, the participation quorum, voting duration, minting fee, per-document locked sections, and amendment intervals.
+Anyone can fork this repository and deploy their own legislative framework.
 
-Any person with an Ethereum wallet can mint a soulbound membership token and join an association. However, if you want, you can include additional requirements for membership such as identification tools or a membership fee.
+Founder choose the categories of law, the approval thresholds for normal and core proposals, the participation quorum, voting duration, minting fee, per-document locked sections, and amendment intervals.
 
-Any token holder can draft legislation in the built-in editor, upload it to permanent storage, and submit it for a vote as an on-chain governance proposal. Members vote For, Against, or Abstain — each vote is an on-chain transaction. When a proposal passes, any wallet can trigger execution, which records the ratified document in the on-chain registry through a Gnosis Safe.
+Any person with an Ethereum wallet can mint a soulbound membership token and join an association. However, if you want, your DAA can include additional requirements for membership such as identification tools or a fee.
+
+Any token holder can draft legislation in the built-in editor, upload it to permanent storage, and submit it for a vote as an on-chain governance proposal. Members vote For, Against, or Abstain. Each vote is an on-chain transaction. When a proposal passes, any wallet can trigger execution, which records the ratified document in the on-chain registry through a Gnosis Safe.
+
+Because the law registry is based on the @vattelum package, any legislation your DAA produces can be referenced and govern application across the entire Ethereum ecosystem and every EVM compatible blockchain!
 
 ## Blockchain infrastructure
 
 The DAA combines four pieces of blockchain infrastructure:
 
-1. **Membership tokens** — Soulbound (non-transferable) ERC-721 tokens that represent membership. One token per address, self-minted. The token grants voting rights and serves as verifiable on-chain proof of membership.
+1. **On-chain registry** — A smart contract on **Ethereum** records a content URI (currently an Arweave transaction ID, but the field is storage-agnostic), a SHA-256 content hash, title, category, document type, version number, and a reference to the governance proposal that approved it. This creates a verifiable index of all ratified legislation.
 
 2. **Permanent storage** — Ratified documents (bylaws, standards, policies) are uploaded to **[Arweave](https://arweave.org)** for permanent storage. Each upload produces a transaction ID that serves as a permanent link to the full text.
 
-3. **On-chain registry** — A smart contract on **Ethereum** records the Arweave transaction ID, a SHA-256 content hash, title, category, document type, version number, and a reference to the governance proposal that approved it. This creates a verifiable index of all ratified legislation.
+3. **Membership tokens** — Soulbound (non-transferable) ERC-721 tokens that represent membership. One token per address, self-minted. The token grants voting rights and serves as verifiable on-chain proof of membership. These are special tokens that cannot be traded and therefore do not create financial and regulatory risk.
 
 4. **On-chain governance** — **[Snapshot X](https://snapshotx.xyz)** (sx-evm) handles proposal creation, voting, and execution entirely on-chain. Execution strategies enforce configurable approval thresholds (e.g., 50% for routine proposals, 70% for structural changes), scaling dynamically with membership size. A **Gnosis Safe** sits between the voting system and the registry, executing approved transactions.
 
@@ -63,7 +71,7 @@ The result is a governance system where every decision is recorded, every docume
 
 The DAA is a fully native dApp. The blockchain is the backend. Smart contracts on Ethereum handle membership, document registration, and governance logic.
 
-The frontend is a static SvelteKit application that connects directly to these contracts through the user's existing wallet (MetaMask, Ledger, WalletConnect, etc.). All state lives on-chain or on Arweave. Nothing is stored on a server.
+The frontend is a static SvelteKit application that connects directly to these contracts through the user's existing wallet (MetaMask, Rabby, Brave Wallet, Ledger via MetaMask, and any other browser-injected EIP-1193 provider). The build output is a pre-rendered HTML + JS bundle with a fixed content hash — no serverless functions, no per-request server logic, mirrorable to IPFS or Arweave. All state lives on-chain or on Arweave. Nothing is stored on a server.
 
 **Smart Contracts** (Solidity 0.8.31, OpenZeppelin 5.x):
 - `DAAToken.sol` — ERC-721 + ERC-5192 soulbound membership token with credential storage, open registration, optional minting fee, and `totalSupply()` for governance quorum
@@ -73,7 +81,7 @@ The frontend is a static SvelteKit application that connects directly to these c
 **Frontend** (SvelteKit, Tailwind CSS):
 - `/` — Public registry browser. Loads categories and documents from the contract, fetches full text from Arweave on demand.
 - `/propose` — Structured markdown editor with section numbering, amendment restriction configuration, Arweave upload, and on-chain proposal creation. Token holders only.
-- `/admin` — Self-service token minting, member list. Open to anyone.
+- `/admin` — Self-service token minting, resign membership (burn token), and paginated member list. Open to anyone.
 - `/vote` — Governance page. Active proposals with voting (For/Against/Abstain), passed proposals with execute button, collapsible history. Token holders vote.
 
 **External Services**:
@@ -127,7 +135,7 @@ You are free to select your own categories of legislation and voting strategies.
 
 #### 1. Deploy the contracts
 
-The deployment consists of six steps, each depending on addresses from the previous one. The contracts can be deployed to any EVM-compatible network where Snapshot X (sx-evm) and Gnosis Safe are available.
+The deployment consists of six required steps plus an optional sealing step, each depending on addresses from the previous one. The contracts can be deployed to any EVM-compatible network where Snapshot X (sx-evm) is also deployed — Ethereum, Optimism, Polygon, Arbitrum, Base, Sepolia, and others. The sx-evm primitive addresses differ per chain; `03_CreateVotingSpace.s.sol` ships with the Sepolia values and a comment block pointing at the Snapshot X deployments page for non-Sepolia chains.
 
 Start by compiling and testing:
 
@@ -138,7 +146,7 @@ forge build
 forge test
 ```
 
-Run the six numbered scripts in `script/` in order. Each step depends on addresses from the previous step — update `.env` between runs.
+Run the numbered scripts in `script/` in order. Each step depends on addresses from the previous step — update `.env` between runs.
 
 ```sh
 forge script script/01_Deploy.s.sol --broadcast --rpc-url $SEPOLIA_RPC_URL

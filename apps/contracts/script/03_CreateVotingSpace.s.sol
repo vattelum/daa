@@ -16,11 +16,29 @@ interface ISpace {
 /// The Space address must be read from the transaction receipt (event logs).
 /// After deployment, set SX_SPACE_ADDRESS in .env before running step 4.
 contract CreateVotingSpace is Script {
-    // Snapshot X (sx-evm) on Sepolia
-    address constant SX_PROXY_FACTORY = 0x4B4F7f64Be813Ccc66AEFC3bFCe2baA01188631c;
-    address constant SX_SPACE_IMPL = 0xC3031A7d3326E47D49BfF9D374d74f364B29CE4D;
-    address constant SX_ETH_TX_AUTH = 0xBA06E6cCb877C332181A6867c05c8b746A21Aed1;
-    address constant SX_VANILLA_VOTING = 0xC1245C5DCa7885C73E32294140F1e5d30688c202;
+    // ─── Snapshot X (sx-evm) primitive addresses ─────────────────────────
+    //
+    // These five addresses are the sx-evm contracts on Sepolia — the demo
+    // chain. Snapshot X is deployed on many EVM chains (Mainnet, Optimism,
+    // Polygon, Arbitrum, Base, etc.), but the proxy factory, space
+    // implementation, authenticator, voting strategy, and proposal-
+    // validation strategy live at different addresses on each chain.
+    //
+    // To deploy on a chain other than Sepolia:
+    //   1. Look up your chain's sx-evm addresses. The canonical source is
+    //      the Snapshot X deployments page:
+    //          https://docs.snapshot.box/protocols/onchain
+    //      (each network has its own "Deployments" subsection).
+    //   2. Replace the five constants below with the addresses for your
+    //      target chain. Leave everything else alone.
+    //
+    // The Sepolia values below are kept as a working default so the demo
+    // deploy command in the README runs end-to-end without editing.
+    // ──────────────────────────────────────────────────────────────────────
+    address constant SX_PROXY_FACTORY               = 0x4B4F7f64Be813Ccc66AEFC3bFCe2baA01188631c;
+    address constant SX_SPACE_IMPL                  = 0xC3031A7d3326E47D49BfF9D374d74f364B29CE4D;
+    address constant SX_ETH_TX_AUTH                 = 0xBA06E6cCb877C332181A6867c05c8b746A21Aed1;
+    address constant SX_VANILLA_VOTING              = 0xC1245C5DCa7885C73E32294140F1e5d30688c202;
     address constant SX_VANILLA_PROPOSAL_VALIDATION = 0x9A39194F870c410633C170889E9025fba2113c79;
 
     function run() external {

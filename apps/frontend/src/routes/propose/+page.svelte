@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { readContract } from '@wagmi/core';
-	import { config } from '$lib/services/ethereum';
-	import { daaRegistryConfig, daaRegistryAddress, normalStrategyAddress, coreStrategyAddress } from '$lib/contracts';
+	import { config } from '$lib/services/wallet-config';
+	import { daaRegistryConfig, daaRegistryAddress, coreStrategyAddress } from '$lib/contracts';
 	import { wallet } from '$lib/stores/wallet';
-	import { loadCategories as fetchCategories, loadDocuments, loadAmendmentRestrictions, getDocumentCount, type CategoryInfo, type DocumentInfo } from '$lib/services/registry';
+	import { loadCategories as fetchCategories, loadDocuments, loadAmendmentRestrictions, loadDocumentBody, type CategoryInfo, type DocumentInfo } from '$lib/services/registry';
 	import Editor from '$lib/components/Editor.svelte';
 	import {
 		type Section,
@@ -12,10 +12,18 @@
 		sectionsToMarkdown,
 		buildDocument,
 		parseDocument,
-		wrapSections
+		renderSectionedMarkdown,
+		wrapWithFrontmatter,
+		validateMarkdownUpload,
+		MarkdownUnsafeError
 	} from '$lib/services/markdown';
-	import { uploadDocument, arweaveUrl } from '$lib/services/arweave';
-	import { hashBody, hashToBytes32 } from '$lib/services/hash';
+	import { uploadDocument, verifyTurboHas } from '$lib/services/arweave';
+	import ProposalConfirmation, { type ProposalConfirmationData } from '$lib/components/ProposalConfirmation.svelte';
+	import ReviewModal from '$lib/components/ReviewModal.svelte';
+	import LoadingButton from '$lib/components/LoadingButton.svelte';
+	import { showToast } from '$lib/stores/toasts';
+	import { hashBody } from '@vattelum/document-registry-js';
+	import { hashToBytes32 } from '$lib/services/hash';
 	import {
 		DOC_TYPES,
 		DOC_TYPE_TO_RELATION,
@@ -25,17 +33,25 @@
 		allowsMultipleReferences,
 		supportsSectionTargeting
 	} from '$lib/constants/docTypes';
-	import { fetchFromArweave } from '$lib/services/arweave';
-	import { computeSectionNumber, markdownToSections, sortByFixedNumber } from '$lib/services/markdown';
+	import { computeSectionNumber, sortByFixedNumber } from '$lib/services/markdown';
+	import type { TemplateVariable } from '$lib/services/template-variables';
+	import AmendmentRestrictions from '$lib/components/AmendmentRestrictions.svelte';
+	import TargetDocumentPicker from '$lib/components/TargetDocumentPicker.svelte';
+	import SectionTargetPicker from '$lib/components/SectionTargetPicker.svelte';
+	import { formatDate, formatCountdown } from '$lib/services/format';
+	import { createDraftStore } from '$lib/services/draft';
+	import { chainIdToLabel, explorerTxUrl } from '$lib/constants/networks';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import Tooltip from '$lib/components/Tooltip.svelte';
 	import {
 		createProposal,
 		encodeAddDocumentTransaction,
+		encodeAddDocumentWithRestrictionsTransaction,
 		encodeSetAmendmentRestrictionsTransaction,
 		selectStrategy,
-		strategyLabel
+		strategyLabel,
+		type MetaTransaction
 	} from '$lib/services/snapshot-x';
 	const chainId = Number(import.meta.env.VITE_CHAIN_ID);
 
@@ -71,9 +87,20 @@
 	let loadingTargetDoc = $state(false);
 	let targetDocError = $state('');
 	let targetDocTitle = $state('');
+	let targetDocVariables = $state<TemplateVariable[]>([]);
 
 	// Repeal state
 	let repealReason = $state('');
+
+	// Title is auto-derived from the target for Amendment/Revision/Repeal, so the field is read-only.
+	// Uniqueness is only enforced for Original — Codification keeps its name free.
+	let titleLocked = $derived(docType === 1 || docType === 2 || docType === 3);
+	let titleDuplicate = $derived.by(() => {
+		if (docType !== 0) return false;
+		const t = title.trim();
+		if (!t) return false;
+		return categoryDocuments.some((d) => d.latestTitle.trim() === t);
+	});
 
 	// Amendment restrictions (existing, read from contract)
 	let lockedSections = $state<number[]>([]);
@@ -91,35 +118,6 @@
 	let proposeLockMode = $state<'entire' | 'specific'>('entire'); // default: entire document
 	let proposeLockedSections = $state<number[]>([]); // specific section numbers
 
-	const TIME_LOCK_PRESETS = [
-		{ value: 'permanent', label: 'Permanent', seconds: 0 },
-		{ value: '90', label: '90 days', seconds: 7_776_000 },
-		{ value: '180', label: '180 days', seconds: 15_552_000 },
-		{ value: '360', label: '360 days', seconds: 31_104_000 },
-		{ value: 'custom', label: 'Custom', seconds: 0 }
-	];
-
-	function handleTimeLockPresetChange(preset: string) {
-		proposeTimeLockPreset = preset;
-		if (preset === 'permanent') {
-			proposeTimeLock = 0;
-			proposeTimeLockCustomDays = '';
-		} else if (preset === 'custom') {
-			const days = parseInt(proposeTimeLockCustomDays, 10);
-			proposeTimeLock = days > 0 ? days * 86400 : 0;
-		} else {
-			const found = TIME_LOCK_PRESETS.find(p => p.value === preset);
-			if (found) proposeTimeLock = found.seconds;
-			proposeTimeLockCustomDays = '';
-		}
-	}
-
-	function handleCustomDaysChange(value: string) {
-		proposeTimeLockCustomDays = value;
-		const days = parseInt(value, 10);
-		proposeTimeLock = days > 0 ? days * 86400 : 0;
-	}
-
 	/** Whether the proposer has set any restrictions */
 	function hasProposedRestrictions(): boolean {
 		if (!proposeRestrictions) return false;
@@ -131,15 +129,6 @@
 		if (!proposeRestrictions) return [];
 		if (proposeLockMode === 'entire') return [0n]; // sentinel for entire document
 		return proposeLockedSections.map(s => BigInt(s));
-	}
-
-	/** Toggle a specific section number for locking */
-	function toggleProposeLockSection(sectionNum: number) {
-		if (proposeLockedSections.includes(sectionNum)) {
-			proposeLockedSections = proposeLockedSections.filter(s => s !== sectionNum);
-		} else {
-			proposeLockedSections = [...proposeLockedSections, sectionNum].sort((a, b) => a - b);
-		}
 	}
 
 	/** Get top-level section numbers from the current editor content */
@@ -273,12 +262,21 @@
 		return availableTargetSections.map(s => s.number);
 	}
 
-	/** Whether a section number is locked (cascade: locking 1 covers 1.1, 1.2, etc.) */
-	function isSectionLocked(sectionNumber: string): boolean {
-		if (lockedSections.length === 0) return false;
-		if (lockedSections.includes(0)) return true; // sentinel: entire document locked
-		const topLevel = parseInt(sectionNumber.split('.')[0], 10);
-		return lockedSections.includes(topLevel);
+	function handleNewSectionsOnlyChange(value: boolean) {
+		newSectionsOnly = value;
+		if (value) {
+			selectedTargetSections = [];
+			sections = [];
+		} else {
+			sections = allParsedSections.map((s, i) => {
+				const sec = createSection(s.depth);
+				sec.title = s.title;
+				sec.content = s.content;
+				sec.fixedNumber = computeSectionNumber(allParsedSections, i).replace('§', '');
+				return sec;
+			});
+		}
+		updateTitle();
 	}
 
 	// Page state
@@ -287,59 +285,21 @@
 	let submitting = $state(false);
 	let submitStep = $state('');
 	let submitError = $state('');
+	// Persists a Turbo upload across retries when the post-upload verification
+	// fails. Cleared on body change, on a failed re-check, and on success — see
+	// handleSubmit. Keeps the user from silently paying for a second Turbo
+	// upload when the first one just hasn't propagated yet.
+	let pendingContentUri = $state<string | null>(null);
+	let pendingContentHash = $state<string | null>(null);
 	let importError = $state('');
 
 	// Review modal
 	let showReview = $state(false);
 	let reviewHtml = $state('');
-	let reviewCopyLabel = $state('Copy');
 
 	// Confirmation
 	let confirmed = $state(false);
-	let confirmData = $state<{
-		txHash: string;
-		arweaveTxId: string;
-		proposalId: number;
-		title: string;
-		category: string;
-		documentId: number;
-		docTypeName: string;
-		refSummary: string;
-		strategy: string;
-	} | null>(null);
-
-	function networkName(): string {
-		if (chainId === 1) return 'Ethereum';
-		if (chainId === 11155111) return 'Sepolia';
-		return `Chain ${chainId}`;
-	}
-
-	function explorerTxUrl(txHash: string): string {
-		if (chainId === 1) return `https://etherscan.io/tx/${txHash}`;
-		if (chainId === 11155111) return `https://sepolia.etherscan.io/tx/${txHash}`;
-		return `https://etherscan.io/tx/${txHash}`;
-	}
-
-	function formatDate(): string {
-		const d = new Date();
-		const months = [
-			'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-			'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-		];
-		return `${String(d.getDate()).padStart(2, '0')} ${months[d.getMonth()]} ${d.getFullYear()}`;
-	}
-
-	function formatCountdown(targetTimestamp: number): string {
-		const now = Math.floor(Date.now() / 1000);
-		const diff = targetTimestamp - now;
-		if (diff <= 0) return 'now';
-		const days = Math.floor(diff / 86400);
-		const hours = Math.floor((diff % 86400) / 3600);
-		const mins = Math.floor((diff % 3600) / 60);
-		if (days > 0) return `${days}d ${hours}h`;
-		if (hours > 0) return `${hours}h ${mins}m`;
-		return `${mins}m`;
-	}
+	let confirmData = $state<ProposalConfirmationData | null>(null);
 
 	async function loadCategories() {
 		try {
@@ -407,17 +367,9 @@
 
 		loadingTargetDoc = true;
 		try {
-			const doc = (await readContract(config, {
-				...daaRegistryConfig,
-				functionName: 'getDocument',
-				args: [BigInt(categoryId), BigInt(docId), BigInt(version)]
-			})) as { arweaveTxId: string; contentHash: string };
-
-			const text = await fetchFromArweave(doc.arweaveTxId, doc.contentHash);
-			const bodyMatch = text.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-			const body = bodyMatch ? bodyMatch[1].trim() : text;
-
-			const parsed = markdownToSections(body);
+			const doc = await loadDocumentBody(categoryId, docId, version);
+			targetDocVariables = doc.variables;
+			const parsed = doc.sections;
 			if (parsed.length === 0) {
 				targetDocError = 'No parseable sections found in the target document.';
 				return;
@@ -636,10 +588,6 @@
 		}
 	}
 
-	function isRefSelected(docId: number, version: number): boolean {
-		return !!selectedRefs.find(r => r.documentId === docId && r.version === version);
-	}
-
 	function buildExternalRefs(): Array<{
 		registryAddress: string;
 		chainId: bigint;
@@ -663,61 +611,65 @@
 	}
 
 	// Draft auto-save
-	const DRAFT_KEY = 'daa:draft';
-	let autoSaveInterval: ReturnType<typeof setInterval> | null = null;
+	interface DraftState {
+		title: string;
+		categoryId: number;
+		documentId: number;
+		docType: number;
+		selectedRefs: Array<{ documentId: number; version: number }>;
+		selectedTargetSections: string[];
+		repealReason: string;
+		sections: Array<{ depth: number; title: string; content: string; fixedNumber?: string }>;
+	}
 
-	function saveDraft() {
-		if (confirmed) return;
-		const hasContent = title.trim() || sections.some(s => s.title.trim() || s.content.trim());
-		if (!hasContent) return;
-		try {
-			localStorage.setItem(DRAFT_KEY, JSON.stringify({
+	const draft = createDraftStore<DraftState>(
+		'daa:draft',
+		() => {
+			if (confirmed) return null;
+			const hasContent = title.trim() || sections.some(s => s.title.trim() || s.content.trim());
+			if (!hasContent) return null;
+			return {
 				title, categoryId, documentId, docType, selectedRefs,
 				selectedTargetSections, repealReason,
 				sections: sections.map(s => ({ depth: s.depth, title: s.title, content: s.content, fixedNumber: s.fixedNumber }))
-			}));
-		} catch {
-			// storage full or unavailable
-		}
-	}
-
-	function restoreDraft() {
-		try {
-			const raw = localStorage.getItem(DRAFT_KEY);
-			if (!raw) return;
-			const draft = JSON.parse(raw);
-			title = draft.title ?? '';
-			categoryId = draft.categoryId ?? -1;
-			documentId = draft.documentId ?? 0;
-			docType = draft.docType ?? 0;
-			selectedRefs = Array.isArray(draft.selectedRefs) ? draft.selectedRefs : [];
-			selectedTargetSections = Array.isArray(draft.selectedTargetSections) ? draft.selectedTargetSections : [];
-			repealReason = draft.repealReason ?? '';
+			};
+		},
+		(d) => {
+			title = d.title ?? '';
+			categoryId = d.categoryId ?? -1;
+			documentId = d.documentId ?? 0;
+			docType = d.docType ?? 0;
+			selectedRefs = Array.isArray(d.selectedRefs) ? d.selectedRefs : [];
+			selectedTargetSections = Array.isArray(d.selectedTargetSections) ? d.selectedTargetSections : [];
+			repealReason = d.repealReason ?? '';
 			if (categoryId >= 0) loadDocsForCategory(categoryId);
 			if (documentId > 0 && categoryId >= 0) {
 				loadVersionsForDocument(categoryId, documentId);
 				loadRestrictions(categoryId, documentId);
 			}
-			if (Array.isArray(draft.sections) && draft.sections.length > 0) {
-				sections = draft.sections.map((s: { depth: number; title: string; content: string; fixedNumber?: string }) =>
+			if (Array.isArray(d.sections) && d.sections.length > 0) {
+				sections = d.sections.map((s) =>
 					({ ...createSection(s.depth as 1 | 2 | 3), title: s.title, content: s.content, fixedNumber: s.fixedNumber })
 				);
 			}
-		} catch {
-			// corrupt draft, ignore
 		}
-	}
+	);
 
-	function clearDraft() {
-		try { localStorage.removeItem(DRAFT_KEY); } catch {}
-	}
-
-	function clearAll() {
-		if (!confirm('Clear all fields?')) return;
+	/**
+	 * Reset every form field to its initial state. Used by both the manual
+	 * "Clear All" button and the "Propose Another" flow after a successful
+	 * submission.
+	 *
+	 * @param resetCategory — whether to wipe the selected category (true for
+	 * Clear All, false for Propose Another which preserves category selection
+	 * momentum).
+	 */
+	function resetAll(resetCategory: boolean) {
+		confirmed = false;
+		confirmData = null;
 		title = '';
-		categoryId = -1;
-		documentId = 0;
 		docType = 0;
+		documentId = 0;
 		selectedRefs = [];
 		categoryDocuments = [];
 		documentVersions = [];
@@ -732,7 +684,13 @@
 		withinInterval = false;
 		sections = [createSection(1)];
 		resetRestrictionFields();
-		clearDraft();
+		draft.clear();
+		if (resetCategory) categoryId = -1;
+	}
+
+	function clearAll() {
+		if (!confirm('Clear all fields?')) return;
+		resetAll(true);
 	}
 
 	function buildRepealBody(): string {
@@ -767,6 +725,10 @@
 			submitError = 'Please select a category.';
 			return;
 		}
+		if (titleDuplicate) {
+			submitError = 'A document with this title already exists in this category. Choose a different title.';
+			return;
+		}
 		if (isRepealMode()) {
 			// Repeal doesn't need editor sections
 		} else if (sections.length === 0) {
@@ -792,7 +754,7 @@
 			reviewHtml = DOMPurify.sanitize(await marked.parse(md));
 		} else {
 			const md = sectionsToMarkdown(sections);
-			reviewHtml = DOMPurify.sanitize(wrapSections(await marked.parse(md)));
+			reviewHtml = await renderSectionedMarkdown(md);
 		}
 		showReview = true;
 	}
@@ -814,69 +776,109 @@
 				title,
 				doc_type: docType,
 				category: cat?.name ?? '',
-				document_id: documentId,
 				registry_address: daaRegistryAddress,
-				network: networkName(),
+				network: chainIdToLabel(chainId),
 				chain_id: chainId,
-				submitted: formatDate(),
+				submitted: formatDate(Math.floor(Date.now() / 1000)),
 				content_hash: contentHash,
 				...(selectedTargetSections.length > 0 ? { target_section: targetSectionValue() } : {})
 			};
 			let fullDocument: string;
 			if (isRepealMode()) {
-				const yaml = Object.entries(frontmatter)
-					.map(([k, v]) => typeof v === 'string' ? `${k}: "${v}"` : `${k}: ${v}`)
-					.join('\n');
-				fullDocument = `---\n${yaml}\n---\n\n${body}\n`;
+				fullDocument = wrapWithFrontmatter(frontmatter, body);
 			} else {
 				fullDocument = buildDocument(frontmatter, sections);
 			}
 
-			// 3. Upload to Arweave (Transaction 1)
-			submitStep = 'Uploading to Arweave...';
-			const arweaveTxId = await uploadDocument(fullDocument);
+			// 2.5 Validate the assembled document is sanitization-clean before upload.
+			submitStep = 'Validating content...';
+			await validateMarkdownUpload(fullDocument);
+
+			// 3. Upload to Arweave (Transaction 1) — or re-check a previous upload
+			// whose verification failed last time, if the body is unchanged.
+			if (pendingContentHash !== contentHash) {
+				pendingContentUri = null;
+				pendingContentHash = null;
+			}
+
+			let contentUri: string;
+			if (pendingContentUri) {
+				submitStep = 'Re-checking previous upload...';
+				try {
+					await verifyTurboHas(pendingContentUri);
+					contentUri = pendingContentUri;
+					pendingContentUri = null;
+					pendingContentHash = null;
+				} catch {
+					pendingContentUri = null;
+					pendingContentHash = null;
+					throw new Error(
+						"Previous upload not confirmed on Arweave. Submit again to start a fresh upload on Arweave."
+					);
+				}
+			} else {
+				submitStep = 'Uploading to Arweave...';
+				contentUri = await uploadDocument(fullDocument);
+
+				submitStep = 'Verifying upload...';
+				try {
+					await verifyTurboHas(contentUri);
+				} catch {
+					pendingContentUri = contentUri;
+					pendingContentHash = contentHash;
+					throw new Error(
+						"Upload sent to Arweave but our system couldn't confirm it yet. Click Submit to re-check."
+					);
+				}
+			}
 
 			// 4. Create Snapshot X proposal (Transaction 2)
 			submitStep = 'Creating governance proposal...';
 			const strategyAddress = getStrategyAddress();
 
-			// Build the MetaTransaction that will execute addDocument() via Safe
-			const addDocTx = encodeAddDocumentTransaction(
-				{
-					categoryId: BigInt(categoryId),
-					documentId: BigInt(documentId),
-					arweaveTxId,
-					contentHash: hashToBytes32(contentHash),
-					title,
-					voteId: '', // Will be filled by the governance flow
-					docType
-				},
-				buildExternalRefs()
-			);
+			const docInput = {
+				categoryId: BigInt(categoryId),
+				documentId: BigInt(documentId),
+				contentUri,
+				contentHash: hashToBytes32(contentHash),
+				title,
+				voteId: '', // Will be filled by the governance flow
+				docType
+			};
+			const refs = buildExternalRefs();
 
-			// Build transaction list — addDocument always, plus optional restrictions
-			const transactions = [addDocTx];
-
-			if (hasProposedRestrictions()) {
-				// For new documents (documentId=0), pre-compute the documentId
-				let restrictionDocId = BigInt(documentId);
-				if (documentId === 0) {
-					submitStep = 'Computing document ID...';
-					const currentCount = await getDocumentCount(categoryId);
-					restrictionDocId = BigInt(currentCount + 1);
-				}
-
-				const restrictionTx = encodeSetAmendmentRestrictionsTransaction(
-					BigInt(categoryId),
-					restrictionDocId,
-					BigInt(proposeTimeLock),
-					getProposedLockedSections()
-				);
-				transactions.push(restrictionTx);
+			// New document + restrictions: single atomic MetaTransaction. The registry
+			// assigns the documentId inside the call and applies restrictions to that
+			// same ID — no client-side prediction, no execute-order race.
+			// Existing document + restrictions: two-tx bundle is still safe because the
+			// documentId is already known.
+			// Plain document (no restrictions): single addDocument tx.
+			let transactions: MetaTransaction[];
+			if (hasProposedRestrictions() && documentId === 0) {
+				transactions = [
+					encodeAddDocumentWithRestrictionsTransaction(
+						docInput,
+						refs,
+						BigInt(proposeTimeLock),
+						getProposedLockedSections()
+					)
+				];
+			} else if (hasProposedRestrictions()) {
+				transactions = [
+					encodeAddDocumentTransaction(docInput, refs),
+					encodeSetAmendmentRestrictionsTransaction(
+						BigInt(categoryId),
+						BigInt(documentId),
+						BigInt(proposeTimeLock),
+						getProposedLockedSections()
+					)
+				];
+			} else {
+				transactions = [encodeAddDocumentTransaction(docInput, refs)];
 			}
 
 			// Metadata URI includes Arweave link for voter verification
-			const metadataURI = `ipfs://proposal:${title}|arweave:${arweaveTxId}`;
+			const metadataURI = `ipfs://proposal:${title}|arweave:${contentUri}`;
 
 			const result = await createProposal(
 				$wallet.address!,
@@ -886,7 +888,9 @@
 			);
 
 			// 5. Clear draft and show confirmation
-			clearDraft();
+			draft.clear();
+			pendingContentUri = null;
+			pendingContentHash = null;
 			confirmed = true;
 			let refSummary = '';
 			if (selectedRefs.length > 0 && requiresReferences(docType)) {
@@ -903,7 +907,7 @@
 
 			confirmData = {
 				txHash: result.txHash,
-				arweaveTxId,
+				contentUri,
 				proposalId: result.proposalId,
 				title,
 				category: cat?.name ?? '',
@@ -913,7 +917,11 @@
 				strategy: strategyLabel(strategyAddress)
 			};
 		} catch (e) {
-			submitError = e instanceof Error ? e.message : 'Proposal creation failed';
+			const msg = e instanceof Error ? e.message : 'Proposal creation failed';
+			submitError = msg;
+			if (!(e instanceof MarkdownUnsafeError)) {
+				showToast('error', msg);
+			}
 		} finally {
 			submitting = false;
 			submitStep = '';
@@ -927,9 +935,8 @@
 			title: title || 'Untitled',
 			doc_type: docType,
 			category: cat?.name ?? '',
-			document_id: documentId,
 			registry_address: daaRegistryAddress,
-			network: networkName(),
+			network: chainIdToLabel(chainId),
 			chain_id: chainId,
 			...(selectedTargetSections.length > 0 ? { target_section: targetSectionValue() } : {})
 		};
@@ -979,38 +986,19 @@
 	}
 
 	function resetForm() {
-		confirmed = false;
-		confirmData = null;
-		title = '';
-		docType = 0;
-		documentId = 0;
-		selectedRefs = [];
-		categoryDocuments = [];
-		documentVersions = [];
-		selectedTargetSections = [];
-		newSectionsOnly = false;
-		availableTargetSections = [];
-		allParsedSections = [];
-		targetDocError = '';
-		targetDocTitle = '';
-		repealReason = '';
-		lockedSections = [];
-		withinInterval = false;
-		sections = [createSection(1)];
-		resetRestrictionFields();
-		clearDraft();
+		resetAll(false);
 		loadCategories();
 	}
 
 	onMount(() => {
-		restoreDraft();
+		draft.restore();
 		loadCategories();
-		autoSaveInterval = setInterval(saveDraft, 30_000);
+		draft.startAutosave();
 	});
 
 	onDestroy(() => {
-		if (autoSaveInterval) clearInterval(autoSaveInterval);
-		saveDraft();
+		draft.stopAutosave();
+		draft.save();
 	});
 </script>
 
@@ -1019,79 +1007,7 @@
 
 	<!-- Confirmation screen -->
 	{#if confirmed && confirmData}
-		<div class="border border-success/40 rounded-lg p-6">
-			<h2 class="text-lg font-medium text-success mb-4">Proposal Created</h2>
-
-			<div class="flex flex-col gap-3 text-sm">
-				<div>
-					<span class="text-text-muted">Title:</span>
-					<span class="ml-2">{confirmData.title}</span>
-				</div>
-				<div>
-					<span class="text-text-muted">Category:</span>
-					<span class="ml-2">{confirmData.category}</span>
-				</div>
-				<div>
-					<span class="text-text-muted">Type:</span>
-					<span class="ml-2">{confirmData.docTypeName}</span>
-				</div>
-				<div>
-					<span class="text-text-muted">Proposal ID:</span>
-					<span class="ml-2 font-mono">{confirmData.proposalId}</span>
-				</div>
-				<div>
-					<span class="text-text-muted">Strategy:</span>
-					<span class="ml-2">{confirmData.strategy}</span>
-				</div>
-				{#if confirmData.refSummary}
-					<div>
-						<span class="text-text-muted">References:</span>
-						<span class="ml-2">{confirmData.refSummary}</span>
-					</div>
-				{/if}
-				<div>
-					<span class="text-text-muted">Transaction:</span>
-					<a
-						href={explorerTxUrl(confirmData.txHash)}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="ml-2 text-primary hover:underline font-mono text-xs"
-					>
-						{confirmData.txHash.slice(0, 10)}...{confirmData.txHash.slice(-8)}
-					</a>
-				</div>
-				<div>
-					<span class="text-text-muted">Arweave:</span>
-					<a
-						href={arweaveUrl(confirmData.arweaveTxId)}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="ml-2 text-primary hover:underline font-mono text-xs"
-					>
-						{confirmData.arweaveTxId}
-					</a>
-				</div>
-			</div>
-
-			<p class="text-text-secondary text-sm mt-4">
-				Members can now vote on this proposal on the Vote page.
-			</p>
-
-			<div class="flex gap-3 mt-6">
-				<a
-					href="/vote"
-					class="text-sm px-4 py-1.5 rounded bg-primary hover:bg-primary-hover text-text transition-colors"
-				>
-					Vote on the Proposal
-				</a>
-				<button
-					onclick={resetForm}
-					class="text-sm px-4 py-1.5 rounded border border-border hover:bg-bg-lighter text-text-secondary transition-colors cursor-pointer"
-				>
-					Propose Another
-				</button>
-			</div>
-		</div>
+		<ProposalConfirmation data={confirmData} {chainId} onReset={resetForm} />
 
 	<!-- Editor (accessible to any token holder) -->
 	{:else}
@@ -1120,9 +1036,15 @@
 							type="text"
 							bind:value={title}
 							disabled={!canPropose}
+							readonly={titleLocked}
 							placeholder="Document title"
-							class="w-full bg-bg-light border border-border rounded px-3 py-2 text-sm outline-none focus:border-primary disabled:opacity-50"
+							class="w-full bg-bg-light border rounded px-3 py-2 text-sm outline-none focus:border-primary disabled:opacity-50 read-only:opacity-60 read-only:cursor-not-allowed {titleDuplicate ? 'border-error' : 'border-border'}"
 						/>
+						{#if titleLocked}
+							<p class="text-xs text-text-muted mt-1">Title is derived from the target document and cannot be edited.</p>
+						{:else if titleDuplicate}
+							<p class="text-xs text-error mt-1">A document with this title already exists in this category. Choose a different title.</p>
+						{/if}
 					</div>
 
 					<div>
@@ -1160,170 +1082,38 @@
 						</select>
 					</div>
 
-					{#if requiresReferences(docType)}
-						<!-- Document selector -->
-						{#if !allowsMultipleReferences(docType)}
-							<div>
-								<label class="block text-sm text-text-secondary mb-1">
-									Select document to {docTypeLabel(docType).toLowerCase()}
-								</label>
-								{#if categoryId < 0}
-									<p class="text-text-muted text-sm">Select a category first.</p>
-								{:else if loadingDocuments}
-									<p class="text-text-muted text-sm">Loading documents...</p>
-								{:else if categoryDocuments.length === 0}
-									<p class="text-text-muted text-sm">No documents in this category.</p>
-								{:else}
-									<div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-border rounded p-2">
-										{#each categoryDocuments as cdoc}
-											<button
-												type="button"
-												onclick={() => handleDocumentSelect(cdoc.documentId)}
-												class="text-left px-3 py-1.5 rounded text-sm transition-colors cursor-pointer
-													{documentId === cdoc.documentId ? 'bg-primary/20 border border-primary/40' : 'hover:bg-bg-lighter border border-transparent'}"
-											>
-												<span class="font-mono text-text-muted mr-2">{cdoc.documentId}.</span>
-												{cdoc.latestTitle}
-												<span class="text-xs text-text-muted ml-1">({cdoc.versionCount} {cdoc.versionCount === 1 ? 'version' : 'versions'})</span>
-											</button>
-										{/each}
-									</div>
-								{/if}
-							</div>
-						{/if}
+					<TargetDocumentPicker
+						{docType}
+						{categoryId}
+						{categoryDocuments}
+						{documentId}
+						{documentVersions}
+						{selectedRefs}
+						{loadingDocuments}
+						{loadingVersions}
+						{loadingRestrictions}
+						{lockedSections}
+						{withinInterval}
+						{nextWindowTime}
+						{coreStrategyAddress}
+						onDocumentSelect={handleDocumentSelect}
+						onToggleRef={toggleRef}
+					/>
 
-						<!-- Amendment restrictions info -->
-						{#if documentId > 0 && !loadingRestrictions}
-							{#if lockedSections.length > 0}
-								<div class="border border-border rounded p-3">
-									<p class="text-text-secondary text-sm">
-										Locked sections: {lockedSections.includes(0) ? 'All' : lockedSections.map(s => '\u00A7' + s).join(', ')}
-										<span class="text-text-muted"> — proposals targeting these sections require {strategyLabel(coreStrategyAddress)} approval.</span>
-									</p>
-									{#if withinInterval}
-										<p class="text-cat-gold text-sm mt-1">Amendment interval active — locked sections require {strategyLabel(coreStrategyAddress)} until <span class="font-mono">{formatCountdown(nextWindowTime)}</span>.</p>
-									{/if}
-								</div>
-							{/if}
-						{/if}
-
-						<!-- Version selector -->
-						{#if (documentId > 0 && !allowsMultipleReferences(docType)) || allowsMultipleReferences(docType)}
-							<div>
-								<label class="block text-sm text-text-secondary mb-1">
-									{allowsMultipleReferences(docType) ? 'Select versions to consolidate' : 'Select version'}
-								</label>
-								{#if loadingVersions}
-									<p class="text-text-muted text-sm">Loading versions...</p>
-								{:else if !allowsMultipleReferences(docType) && documentVersions.length === 0}
-									<p class="text-text-muted text-sm">No versions found.</p>
-								{:else if allowsMultipleReferences(docType) && categoryDocuments.length === 0}
-									<p class="text-text-muted text-sm">Select a category first.</p>
-								{:else}
-									<div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-border rounded p-2">
-										{#if allowsMultipleReferences(docType)}
-											{#each categoryDocuments as cdoc}
-												<button
-													type="button"
-													onclick={() => toggleRef({ documentId: cdoc.documentId, version: 1 })}
-													class="text-left px-3 py-1.5 rounded text-sm transition-colors cursor-pointer
-														{isRefSelected(cdoc.documentId, 1) ? 'bg-primary/20 border border-primary/40' : 'hover:bg-bg-lighter border border-transparent'}"
-												>
-													<span class="font-mono text-text-muted mr-2">{cdoc.documentId}.</span>
-													{cdoc.latestTitle}
-												</button>
-											{/each}
-										{:else}
-											{#each documentVersions as ver}
-												<button
-													type="button"
-													onclick={() => toggleRef({ documentId, version: ver.version })}
-													class="text-left px-3 py-1.5 rounded text-sm transition-colors cursor-pointer
-														{isRefSelected(documentId, ver.version) ? 'bg-primary/20 border border-primary/40' : 'hover:bg-bg-lighter border border-transparent'}"
-												>
-													<span class="font-mono text-text-muted mr-2">v{ver.version}</span>
-													{ver.title}
-													<span class="text-xs px-1.5 py-0.5 rounded bg-bg-lighter text-text-muted ml-1">{docTypeLabel(ver.docType)}</span>
-												</button>
-											{/each}
-										{/if}
-									</div>
-								{/if}
-							</div>
-						{/if}
-
-						<!-- Section picker (Amendment + Repeal only) -->
-						{#if supportsSectionTargeting(docType) && selectedRefs.length === 1}
-							<div>
-								<label class="block text-sm text-text-secondary mb-1">
-									Target sections <span class="text-text-muted">(select specific sections, or leave all unselected for whole document)</span>
-								</label>
-								{#if loadingTargetDoc}
-									<p class="text-text-muted text-sm">Loading document sections...</p>
-								{:else if targetDocError}
-									<p class="text-text-muted text-sm">{targetDocError}</p>
-								{:else if availableTargetSections.length > 0}
-									<div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-border rounded p-2 {newSectionsOnly ? 'opacity-40 pointer-events-none' : ''}">
-										{#each availableTargetSections as sec}
-											{@const explicit = !newSectionsOnly && selectedTargetSections.includes(sec.number)}
-											{@const implicit = !newSectionsOnly && isImplicitlySelected(sec.number)}
-											{@const locked = isSectionLocked(sec.number)}
-											<button
-												type="button"
-												onclick={() => handleSectionToggle(sec.number)}
-												disabled={newSectionsOnly}
-												class="text-left rounded text-sm transition-colors cursor-pointer
-													{explicit ? 'bg-primary/20 border border-primary/40' : implicit ? 'bg-primary/10 border border-primary/20 opacity-60' : 'hover:bg-bg-lighter border border-transparent'}"
-												style="padding: 6px 12px 6px {12 + (sec.depth - 1) * 16}px"
-											>
-												<span class="font-mono text-text-muted mr-2">{'\u00A7'}{sec.number}</span>
-												{sec.title}
-												{#if implicit}<span class="text-xs text-text-muted ml-1">(included)</span>{/if}
-												{#if locked}<span class="text-xs text-error ml-1">(locked)</span>{/if}
-											</button>
-										{/each}
-									</div>
-									{#if newSectionsOnly}
-										<p class="text-xs text-text-muted mt-1">
-											Adding new sections only. Use the editor to add clauses.
-										</p>
-									{:else if selectedTargetSections.length > 0}
-										<p class="text-xs text-text-muted mt-1">
-											Targeting {sortedSelectedSections().map(s => '\u00A7' + s).join(', ')}{sortedSelectedSections().some(s => availableTargetSections.some(t => t.number.startsWith(s + '.'))) ? ' (and all subsections)' : ''}{isRepealMode() ? '' : ' \u2014 editor loaded with selected sections.'}
-										</p>
-									{:else}
-										<p class="text-xs text-text-muted mt-1">
-											All sections loaded. Select specific sections to narrow the scope.
-										</p>
-									{/if}
-									{#if isAmendmentMode()}
-										<label class="flex items-center gap-2 cursor-pointer mt-2">
-											<input
-												type="checkbox"
-												bind:checked={newSectionsOnly}
-												onchange={() => {
-													if (newSectionsOnly) {
-														selectedTargetSections = [];
-														sections = [];
-													} else {
-														sections = allParsedSections.map((s, i) => {
-															const sec = createSection(s.depth);
-															sec.title = s.title;
-															sec.content = s.content;
-															sec.fixedNumber = computeSectionNumber(allParsedSections, i).replace('§', '');
-															return sec;
-														});
-													}
-													updateTitle();
-												}}
-												class="accent-primary"
-											/>
-											<span class="text-sm text-text-secondary">Add new section instead</span>
-										</label>
-									{/if}
-								{/if}
-							</div>
-						{/if}
+					{#if requiresReferences(docType) && supportsSectionTargeting(docType) && selectedRefs.length === 1}
+						<SectionTargetPicker
+							{availableTargetSections}
+							bind:selectedTargetSections
+							bind:newSectionsOnly
+							{loadingTargetDoc}
+							{targetDocError}
+							{lockedSections}
+							isAmendmentMode={isAmendmentMode()}
+							isRepealMode={isRepealMode()}
+							{targetDocVariables}
+							onToggleSection={handleSectionToggle}
+							onNewSectionsOnlyChange={handleNewSectionsOnlyChange}
+						/>
 					{/if}
 				</div>
 
@@ -1333,7 +1123,7 @@
 						<div>
 							<p class="text-sm text-text-secondary">
 								{#if selectedTargetSections.length > 0}
-									Repealing {sortedSelectedSections().map(s => '\u00A7' + s).join(', ')}{sortedSelectedSections().some(s => availableTargetSections.some(t => t.number.startsWith(s + '.'))) ? ' (and all subsections)' : ''} of "{targetDocTitle}"
+									Repealing {sortedSelectedSections().map(s => '§' + s).join(', ')}{sortedSelectedSections().some(s => availableTargetSections.some(t => t.number.startsWith(s + '.'))) ? ' (and all subsections)' : ''} of "{targetDocTitle}"
 								{:else}
 									Repealing entire document "{targetDocTitle}"
 								{/if}
@@ -1354,24 +1144,27 @@
 					<!-- Import/Export/Clear -->
 					{#if canPropose}
 						<div class="flex gap-3">
-							<button
+							<LoadingButton
 								onclick={handleImport}
-								class="text-sm px-4 py-1.5 rounded border border-primary text-primary hover:bg-primary hover:text-text transition-colors cursor-pointer"
+								variant="none"
+								class="border border-primary text-primary hover:bg-primary hover:text-text py-1.5"
 							>
 								Import .md
-							</button>
-							<button
+							</LoadingButton>
+							<LoadingButton
 								onclick={handleExport}
-								class="text-sm px-4 py-1.5 rounded border border-primary text-primary hover:bg-primary hover:text-text transition-colors cursor-pointer"
+								variant="none"
+								class="border border-primary text-primary hover:bg-primary hover:text-text py-1.5"
 							>
 								Export .md
-							</button>
-							<button
+							</LoadingButton>
+							<LoadingButton
 								onclick={clearAll}
-								class="text-sm px-4 py-1.5 rounded border border-border text-text-muted hover:border-error hover:text-error transition-colors cursor-pointer"
+								variant="none"
+								class="border border-border text-text-muted hover:border-error hover:text-error py-1.5"
 							>
 								Clear All
-							</button>
+							</LoadingButton>
 						</div>
 					{/if}
 
@@ -1385,107 +1178,15 @@
 
 				<!-- Amendment Restrictions (only for new documents and revisions, not amendments) -->
 				{#if canPropose && docType !== 3 && !isAmendmentMode()}
-					<div class="border border-border rounded-lg p-4">
-						<label class="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								bind:checked={proposeRestrictions}
-								class="accent-primary"
-							/>
-							<span class="text-sm text-text-secondary">Set amendment restrictions on this document</span>
-							<Tooltip text={"Bundle amendment restrictions with this proposal. Restrictions protect the document from frequent or trivial changes.\n\nIncludes time locks (minimum wait between amendments) and section locks (require 70% supermajority to amend).\n\nRestrictions route the proposal to Core strategy (70%)."} align="left"><span class="text-text-muted cursor-help text-xs">(?)</span></Tooltip>
-						</label>
-
-						{#if proposeRestrictions}
-							<div class="mt-4 flex flex-col gap-4">
-								<!-- Locked sections (first) -->
-								<div>
-									<label class="block text-sm text-text-secondary mb-1">Locked sections <span class="text-text-muted">(require 70% to amend)</span></label>
-									<div class="flex items-center gap-4 mb-2">
-										<label class="flex items-center gap-1.5 cursor-pointer text-sm">
-											<input
-												type="radio"
-												name="lockMode"
-												value="entire"
-												checked={proposeLockMode === 'entire'}
-												onchange={() => { proposeLockMode = 'entire'; proposeLockedSections = []; }}
-												class="accent-primary"
-											/>
-											Entire document
-										</label>
-										<label class="flex items-center gap-1.5 cursor-pointer text-sm">
-											<input
-												type="radio"
-												name="lockMode"
-												value="specific"
-												checked={proposeLockMode === 'specific'}
-												onchange={() => proposeLockMode = 'specific'}
-												class="accent-primary"
-											/>
-											Specific sections
-										</label>
-									</div>
-									{#if proposeLockMode === 'specific'}
-										{@const topSections = getTopLevelSectionNumbers()}
-										{#if topSections.length > 0}
-											<div class="flex flex-wrap gap-2">
-												{#each topSections as secNum}
-													{@const isChecked = proposeLockedSections.includes(secNum)}
-													<button
-														type="button"
-														onclick={() => toggleProposeLockSection(secNum)}
-														class="px-3 py-1 rounded text-sm border transition-colors cursor-pointer
-															{isChecked ? 'bg-primary/20 border-primary/40 text-text' : 'border-border text-text-muted hover:border-primary/40'}"
-													>
-														&sect;{secNum}
-													</button>
-												{/each}
-											</div>
-											{#if proposeLockedSections.length > 0}
-												<p class="text-xs text-text-muted mt-1">Locking {proposeLockedSections.map(s => '\u00A7' + s).join(', ')} (cascade: subsections included)</p>
-											{/if}
-										{:else}
-											<p class="text-xs text-text-muted">Add sections to the editor to select which to lock.</p>
-										{/if}
-									{:else}
-										<p class="text-xs text-text-muted">All sections will require 70% supermajority to amend.</p>
-									{/if}
-								</div>
-
-								<!-- Duration (second) -->
-								<div>
-									<label class="block text-sm text-text-secondary mb-1">Duration <span class="text-text-muted">(minimum time between amendments to locked sections)</span></label>
-									<div class="flex items-center gap-2">
-										<select
-											value={proposeTimeLockPreset}
-											onchange={(e) => handleTimeLockPresetChange((e.target as HTMLSelectElement).value)}
-											class="bg-bg-light border border-border rounded px-3 py-2 text-sm outline-none focus:border-primary"
-										>
-											{#each TIME_LOCK_PRESETS as preset}
-												<option value={preset.value}>{preset.label}</option>
-											{/each}
-										</select>
-										{#if proposeTimeLockPreset === 'custom'}
-											<input
-												type="number"
-												min="1"
-												placeholder="Days"
-												value={proposeTimeLockCustomDays}
-												oninput={(e) => handleCustomDaysChange((e.target as HTMLInputElement).value)}
-												class="w-24 bg-bg-light border border-border rounded px-3 py-2 text-sm outline-none focus:border-primary"
-											/>
-											<span class="text-xs text-text-muted">days</span>
-										{/if}
-									</div>
-									{#if proposeTimeLockPreset === 'permanent'}
-										<p class="text-xs text-text-muted mt-1">Locked sections always require 70% supermajority.</p>
-									{:else if proposeTimeLock > 0}
-										<p class="text-xs text-text-muted mt-1">After an amendment, locked sections require 70% for {Math.round(proposeTimeLock / 86400)} days before returning to 50%.</p>
-									{/if}
-								</div>
-							</div>
-						{/if}
-					</div>
+					<AmendmentRestrictions
+						bind:enabled={proposeRestrictions}
+						bind:timeLockSeconds={proposeTimeLock}
+						bind:timeLockPreset={proposeTimeLockPreset}
+						bind:timeLockCustomDays={proposeTimeLockCustomDays}
+						bind:lockMode={proposeLockMode}
+						bind:lockedSectionNumbers={proposeLockedSections}
+						topSections={getTopLevelSectionNumbers()}
+					/>
 				{/if}
 
 				<!-- Strategy indicator -->
@@ -1510,17 +1211,15 @@
 
 				{#if canPropose}
 					<div class="flex items-center gap-2">
-						<button
+						<LoadingButton
 							onclick={openReview}
-							disabled={submitting}
-							class="self-start px-6 py-2 rounded bg-primary hover:bg-primary-hover text-text text-sm font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+							loading={submitting}
+							loadingLabel={submitStep || 'Submitting...'}
+							variant="primary"
+							class="self-start px-6"
 						>
-							{#if submitting}
-								{submitStep}
-							{:else}
-								Review &amp; Submit Proposal
-							{/if}
-						</button>
+							Review &amp; Submit Proposal
+						</LoadingButton>
 						<Tooltip text={"The document is uploaded to Arweave (permanent storage), then a governance proposal is created on Snapshot X.\n\nMembers vote on-chain. If the proposal passes, anyone can execute it from the homepage, which records the document in the registry via the Gnosis Safe.\n\nTwo transactions: (1) Arweave upload, (2) Snapshot X proposal creation."} align="left" position="above"><span class="text-sm text-text-muted cursor-help">(?)</span></Tooltip>
 					</div>
 				{/if}
@@ -1531,74 +1230,26 @@
 
 <!-- Review modal -->
 {#if showReview}
-	<div
-		class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-6"
-		onkeydown={(e) => { if (e.key === 'Escape') showReview = false; }}
-		role="button"
-		tabindex="-1"
-	>
-		<div class="bg-bg border border-border rounded-lg max-w-3xl w-full max-h-[85vh] flex flex-col">
-			<div class="flex items-center justify-between px-6 py-4 border-b border-border">
-				<h2 class="text-lg font-medium">Review: {title}</h2>
-				<button
-					onclick={() => showReview = false}
-					class="text-text-muted hover:text-text transition-colors cursor-pointer text-lg"
-				>&times;</button>
-			</div>
-
-			<div class="px-6 py-4 text-sm text-text-secondary border-b border-border flex flex-wrap gap-x-6 gap-y-1">
-				<span>Category: {categories.find(c => c.id === categoryId)?.name ?? ''}</span>
-				{#if documentId > 0}
-					<span>Document: {documentId}</span>
-				{/if}
-				<span>Type: {docTypeLabel(docType)}</span>
-				{#if selectedTargetSections.length > 0}
-					<span>Target: {selectedTargetSections.map(s => '\u00A7' + s).join(', ')}</span>
-				{/if}
-				<span class="{touchesLockedSections() ? 'text-error' : ''}">Strategy: {strategyLabel(getStrategyAddress())}{#if touchesLockedSections() && withinInterval} — targets locked sections + within interval{:else if touchesLockedSections()} — targets locked sections{/if}</span>
-				{#if hasProposedRestrictions()}
-					<span class="text-cat-gold">Restrictions: {proposeLockMode === 'entire' ? 'Entire document locked' : proposeLockedSections.map(s => '\u00A7' + s).join(', ') + ' locked'}{#if proposeTimeLock > 0}, {Math.round(proposeTimeLock / 86400)}-day interval{:else}, permanent{/if}</span>
-				{/if}
-			</div>
-
-			<div class="overflow-y-auto px-6 py-6 flex-1">
-				<div class="doc-viewer prose prose-invert max-w-none text-sm">
-					{@html reviewHtml}
-				</div>
-			</div>
-
-			<div class="flex items-center justify-between px-6 py-4 border-t border-border">
-				<button
-					onclick={async () => {
-						const md = isRepealMode() ? buildRepealBody() : sectionsToMarkdown(sections);
-						try {
-							await navigator.clipboard.writeText(md);
-							reviewCopyLabel = 'Copied';
-							setTimeout(() => reviewCopyLabel = 'Copy', 2000);
-						} catch {
-							reviewCopyLabel = 'Failed';
-							setTimeout(() => reviewCopyLabel = 'Copy', 2000);
-						}
-					}}
-					class="text-sm px-4 py-1.5 rounded border border-primary text-primary hover:bg-primary hover:text-text transition-colors cursor-pointer"
-				>
-					{reviewCopyLabel}
-				</button>
-				<div class="flex items-center gap-3">
-					<button
-						onclick={() => showReview = false}
-						class="text-sm px-4 py-1.5 rounded border border-border hover:bg-bg-lighter text-text-secondary transition-colors cursor-pointer"
-					>
-						Back to Editor
-					</button>
-					<button
-						onclick={handleSubmit}
-						class="text-sm px-6 py-1.5 rounded bg-primary hover:bg-primary-hover text-text font-medium transition-colors cursor-pointer"
-					>
-						Upload &amp; Create Proposal
-					</button>
-				</div>
-			</div>
-		</div>
-	</div>
+	{#snippet reviewBadges()}
+		<span>Category: {categories.find(c => c.id === categoryId)?.name ?? ''}</span>
+		{#if documentId > 0}
+			<span>Document: {documentId}</span>
+		{/if}
+		<span>Type: {docTypeLabel(docType)}</span>
+		{#if selectedTargetSections.length > 0}
+			<span>Target: {selectedTargetSections.map(s => '\u00A7' + s).join(', ')}</span>
+		{/if}
+		<span class={touchesLockedSections() ? 'text-error' : ''}>Strategy: {strategyLabel(getStrategyAddress())}{#if touchesLockedSections() && withinInterval} — targets locked sections + within interval{:else if touchesLockedSections()} — targets locked sections{/if}</span>
+		{#if hasProposedRestrictions()}
+			<span class="text-cat-gold">Restrictions: {proposeLockMode === 'entire' ? 'Entire document locked' : proposeLockedSections.map(s => '\u00A7' + s).join(', ') + ' locked'}{#if proposeTimeLock > 0}, {Math.round(proposeTimeLock / 86400)}-day interval{:else}, permanent{/if}</span>
+		{/if}
+	{/snippet}
+	<ReviewModal
+		{title}
+		bodyHtml={reviewHtml}
+		badges={reviewBadges}
+		copyText={isRepealMode() ? buildRepealBody() : sectionsToMarkdown(sections)}
+		onClose={() => showReview = false}
+		onSubmit={handleSubmit}
+	/>
 {/if}

@@ -1,22 +1,29 @@
 <script lang="ts">
 	import '../app.css';
-	import '$lib/services/ethereum';
+	import '$lib/services/wallet-config';
+	import '$lib/services/markdown';
 	import { wallet } from '$lib/stores/wallet';
-	import { connectWallet, disconnectWallet } from '$lib/services/ethereum';
+	import { connectWallet, disconnectWallet } from '$lib/services/wallet-config';
 	import { page } from '$app/stores';
+	import { afterNavigate } from '$app/navigation';
+	import { truncAddr } from '$lib/services/format';
+	import Toaster from '$lib/components/Toaster.svelte';
+	import Footer from '$lib/components/Footer.svelte';
 
 	let { children } = $props();
 
-	function truncateAddress(addr: string) {
-		return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-	}
-
 	const navItems = [
 		{ href: '/', label: 'Home' },
-		{ href: '/propose', label: 'Propose' },
 		{ href: '/admin', label: 'Members' },
+		{ href: '/propose', label: 'Propose' },
 		{ href: '/vote', label: 'Vote' }
 	];
+
+	afterNavigate(() => {
+		if (typeof window !== 'undefined') {
+			window.scrollTo({ top: 0, left: 0 });
+		}
+	});
 </script>
 
 <svelte:head>
@@ -48,7 +55,7 @@
 						<span class="text-xs text-primary">admin</span>
 					{/if}
 					<span class="text-sm text-text-secondary">
-						{truncateAddress($wallet.address)}
+						{truncAddr($wallet.address)}
 					</span>
 					<button
 						onclick={() => disconnectWallet()}
@@ -71,4 +78,7 @@
 	<main class="max-w-4xl mx-auto px-6 py-8">
 		{@render children()}
 	</main>
+
+	<Footer />
+	<Toaster />
 </div>

@@ -2,6 +2,11 @@
 pragma solidity ^0.8.29;
 
 import { IAvatar } from "@zodiac/interfaces/IAvatar.sol";
+// IExecutionStrategy declares two errors used below — `InvalidProposalStatus(ProposalStatus)`
+// and `ExecutionFailed()` — neither is redeclared locally. If sx-evm's interface signatures
+// change in a future version, those revert paths bind to the new definitions silently.
+// Pinned expectation: sx-evm @ commit baseline used at the current Sepolia deploy. If the
+// lockfile version diverges, re-verify the two error selectors before redeploying.
 import { IExecutionStrategy } from "sx-evm/interfaces/IExecutionStrategy.sol";
 import { MetaTransaction, Proposal, ProposalStatus, FinalizationStatus } from "sx-evm/types.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";

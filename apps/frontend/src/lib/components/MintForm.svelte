@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { readContract, writeContract, waitForTransactionReceipt } from '@wagmi/core';
-	import { config, checkRoles } from '$lib/services/ethereum';
+	import { config, checkRoles } from '$lib/services/wallet-config';
 	import { daaTokenConfig, daaRegistryConfig, termsCategoryId, termsDocumentId } from '$lib/contracts';
 	import { wallet } from '$lib/stores/wallet';
 	import { toHex, formatEther } from 'viem';
@@ -10,13 +10,16 @@
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import Tooltip from '$lib/components/Tooltip.svelte';
+	import LoadingButton from '$lib/components/LoadingButton.svelte';
+	import { showToast } from '$lib/stores/toasts';
 
 	let { onminted }: { onminted?: () => void } = $props();
 
 	let credential = $state('');
+	let showAdvanced = $state(false);
 	let submitting = $state(false);
+	// Inline error used only for pre-submit input validation.
 	let error = $state('');
-	let success = $state('');
 	let mintFee = $state<bigint>(0n);
 	let loadingFee = $state(true);
 	let alreadyMember = $state(false);
@@ -27,7 +30,7 @@
 	let termsTitle = $state('');
 	let loadingTerms = $state(false);
 	let termsExpanded = $state(false);
-	let hasTerms = termsCategoryId !== null && termsDocumentId !== null;
+	let hasTerms = $state(termsCategoryId !== null && termsDocumentId !== null);
 
 	async function loadMintFee() {
 		try {
@@ -50,10 +53,10 @@
 				...daaRegistryConfig,
 				functionName: 'getLatest',
 				args: [BigInt(termsCategoryId!), BigInt(termsDocumentId!)]
-			})) as { arweaveTxId: string; contentHash: string; title: string };
+			})) as { contentUri: string; contentHash: string; title: string };
 
 			termsTitle = doc.title;
-			const text = await fetchFromArweave(doc.arweaveTxId, doc.contentHash);
+			const text = await fetchFromArweave(doc.contentUri, doc.contentHash);
 			const bodyMatch = text.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
 			const body = bodyMatch ? bodyMatch[1].trim() : text;
 			termsHtml = DOMPurify.sanitize(wrapSections(await marked.parse(body)));
@@ -90,14 +93,13 @@
 			error = 'Connect your wallet first.';
 			return;
 		}
-		if (credential.length > 1024) {
-			error = 'Credential must be 1024 characters or fewer.';
+		if (credential.length > 256) {
+			error = 'Credential must be 256 characters or fewer.';
 			return;
 		}
 
 		submitting = true;
 		error = '';
-		success = '';
 
 		try {
 			const credentialBytes = credential.trim()
@@ -113,8 +115,9 @@
 
 			await waitForTransactionReceipt(config, { hash: txHash });
 
-			success = 'Membership token minted to your wallet.';
+			showToast('success', 'Membership token minted to your wallet.');
 			credential = '';
+			showAdvanced = false;
 			alreadyMember = true;
 			if ($wallet.address) await checkRoles($wallet.address);
 			onminted?.();
@@ -122,16 +125,16 @@
 			const msg = e instanceof Error ? e.message : 'Mint failed';
 			const lower = msg.toLowerCase();
 			if (lower.includes('already holds a token') || lower.includes('singletokenperaddress')) {
-				error = 'Your wallet already holds a membership token.';
+				showToast('error', 'Your wallet already holds a membership token.');
 				alreadyMember = true;
 			} else if (lower.includes('incorrectfee') || lower.includes('incorrect fee')) {
-				error = 'Incorrect fee amount. Please ensure you send the exact minting fee.';
+				showToast('error', 'Incorrect fee amount. Please ensure you send the exact minting fee.');
 			} else if (lower.includes('gas limit') || lower.includes('reverted')) {
-				error = 'Transaction reverted. Your wallet may already hold a token.';
+				showToast('error', 'Transaction reverted. Your wallet may already hold a token.');
 			} else if (lower.includes('user rejected') || lower.includes('denied')) {
-				error = 'Transaction was rejected in wallet.';
+				showToast('error', 'Transaction was rejected in wallet.');
 			} else {
-				error = msg;
+				showToast('error', msg);
 			}
 		} finally {
 			submitting = false;
@@ -146,6 +149,10 @@
 			alreadyMember = false;
 			checkingMembership = false;
 		}
+	});
+
+	$effect(() => {
+		if (!showAdvanced) credential = '';
 	});
 
 	onMount(() => {
@@ -187,19 +194,6 @@
 			<p class="text-text-muted text-sm">Loading terms of membership...</p>
 		{/if}
 
-		<div>
-			<label for="credential" class="block text-sm text-text-secondary mb-1">
-				Credential <span class="text-text-muted">(optional)</span> <Tooltip text={"An optional byte field stored on-chain with your token. It can hold any identifier: a DID, an organizational role, or a hashed credential. Any contract or application can read this field to implement access control, identity verification, or role-based permissions.\n\nBecause it is permanently public on-chain, do not store sensitive data directly."} align="left"><span class="text-text-muted cursor-help">(?)</span></Tooltip>
-			</label>
-			<input
-				id="credential"
-				type="text"
-				bind:value={credential}
-				placeholder="DID, role, or leave empty"
-				class="w-full bg-bg-light border border-border rounded px-3 py-2 text-sm outline-none focus:border-primary"
-			/>
-		</div>
-
 		{#if mintFee > 0n && !loadingFee}
 			<p class="text-sm text-text-secondary">
 				Minting fee: <span class="font-mono text-text">{formatEther(mintFee)} ETH</span>
@@ -210,16 +204,42 @@
 			<p class="text-error text-sm">{error}</p>
 		{/if}
 
-		{#if success}
-			<p class="text-success text-sm">{success}</p>
-		{/if}
-
-		<button
+		<LoadingButton
 			onclick={handleMint}
-			disabled={submitting || !$wallet.connected}
-			class="self-start px-5 py-2 rounded bg-primary hover:bg-primary-hover text-text text-sm font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+			loading={submitting}
+			loadingLabel="Minting..."
+			disabled={!$wallet.connected}
+			variant="primary"
+			class="self-start px-5 font-medium"
 		>
-			{submitting ? 'Minting...' : mintFee > 0n ? `Mint Token (${formatEther(mintFee)} ETH)` : 'Mint Token'}
-		</button>
+			{mintFee > 0n ? `Mint Token (${formatEther(mintFee)} ETH)` : 'Mint Token'}
+		</LoadingButton>
+
+		<div class="border-t border-border pt-3 flex flex-col gap-2">
+			<label class="inline-flex items-center gap-2 text-sm text-text-secondary cursor-pointer select-none">
+				<input
+					type="checkbox"
+					bind:checked={showAdvanced}
+					class="cursor-pointer"
+				/>
+				Advanced credential <Tooltip text={"An optional bytes field stored on-chain alongside your membership token. The wallet address is the binding identifier on its own; the credential is an opaque commitment that a separate consumer — an identity-issuing frontend, an indexer, an integration — can resolve to a person, role, or hash.\n\nThis frontend stores the bytes at mint but does not read or display them. Consumers read via getCredential(tokenId) on DAAToken.\n\nPermanently public on-chain. Do not store sensitive data directly — use a hash of off-chain material if you need linkage to identity proof."} align="left"><span class="text-text-muted cursor-help">(?)</span></Tooltip>
+			</label>
+
+			{#if showAdvanced}
+				<div>
+					<label for="credential" class="block text-xs text-text-muted mb-1">
+						Credential bytes (max 256 characters)
+					</label>
+					<input
+						id="credential"
+						type="text"
+						bind:value={credential}
+						maxlength="256"
+						placeholder="Hash, DID, identifier, or leave empty"
+						class="w-full bg-bg-light border border-border rounded px-3 py-2 text-sm outline-none focus:border-primary"
+					/>
+				</div>
+			{/if}
+		</div>
 	{/if}
 </div>

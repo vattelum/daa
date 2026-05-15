@@ -4,6 +4,7 @@ pragma solidity ^0.8.29;
 import {Test} from "forge-std/Test.sol";
 import {DAAToken} from "../src/DAAToken.sol";
 import {DAARegistry} from "../src/DAARegistry.sol";
+import {Document, DocumentReference} from "@vattelum/document-registry/DocumentRegistry.sol";
 import {IVerifier} from "../src/interfaces/IVerifier.sol";
 
 /// @dev Mock verifier that approves only whitelisted addresses.
@@ -51,7 +52,7 @@ contract ForwardCompatTest is Test {
     // ──────────────── Helpers ────────────────────────────────
 
     function _addDocument(
-        string memory arweaveTxId,
+        string memory contentUri,
         bytes32 contentHash,
         string memory title,
         uint8 docType
@@ -59,28 +60,28 @@ contract ForwardCompatTest is Test {
         DAARegistry.DocumentInput memory input = DAARegistry.DocumentInput({
             categoryId: 0,
             documentId: 0,
-            arweaveTxId: arweaveTxId,
+            contentUri: contentUri,
             contentHash: contentHash,
             title: title,
             voteId: "",
             docType: docType
         });
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](0);
+        DocumentReference[] memory refs = new DocumentReference[](0);
         vm.prank(normalAuth);
         return registry.addDocument(input, refs);
     }
 
     function _addDocumentWithRefs(
-        string memory arweaveTxId,
+        string memory contentUri,
         bytes32 contentHash,
         string memory title,
         uint8 docType,
-        DAARegistry.ExternalReference[] memory refs
+        DocumentReference[] memory refs
     ) internal returns (uint256 documentId, uint256 version) {
         DAARegistry.DocumentInput memory input = DAARegistry.DocumentInput({
             categoryId: 0,
             documentId: 0,
-            arweaveTxId: arweaveTxId,
+            contentUri: contentUri,
             contentHash: contentHash,
             title: title,
             voteId: "",
@@ -95,7 +96,7 @@ contract ForwardCompatTest is Test {
     function test_docType0_storedAndRetrieved() public {
         (uint256 docId, uint256 v) = _addDocument("tx_dt0", HASH_A, "Legislation", 0);
 
-        DAARegistry.Document memory doc = registry.getDocument(0, docId, v);
+        Document memory doc = registry.getDocument(0, docId, v);
         assertEq(doc.docType, 0);
     }
 
@@ -104,7 +105,7 @@ contract ForwardCompatTest is Test {
     function test_docType1_storedAndRetrieved() public {
         (uint256 docId, uint256 v) = _addDocument("tx_dt1", HASH_A, "Amendment", 1);
 
-        DAARegistry.Document memory doc = registry.getDocument(0, docId, v);
+        Document memory doc = registry.getDocument(0, docId, v);
         assertEq(doc.docType, 1);
     }
 
@@ -120,13 +121,13 @@ contract ForwardCompatTest is Test {
         DAARegistry.DocumentInput memory input = DAARegistry.DocumentInput({
             categoryId: 0,
             documentId: 0,
-            arweaveTxId: "tx_evt",
+            contentUri: "tx_evt",
             contentHash: HASH_A,
             title: "Event Test",
             voteId: "",
             docType: 1
         });
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](0);
+        DocumentReference[] memory refs = new DocumentReference[](0);
 
         vm.prank(normalAuth);
         vm.expectEmit(true, true, true, true);
@@ -137,8 +138,8 @@ contract ForwardCompatTest is Test {
     // ──────────────── Scenario 3: relationType = 0 (GOVERNS) ─
 
     function test_relationType0_governs_storedAndRetrieved() public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](1);
-        refs[0] = DAARegistry.ExternalReference({
+        DocumentReference[] memory refs = new DocumentReference[](1);
+        refs[0] = DocumentReference({
             registryAddress: address(0xBEEF),
             chainId: block.chainid,
             categoryId: 0,
@@ -150,7 +151,7 @@ contract ForwardCompatTest is Test {
 
         (uint256 docId, uint256 v) = _addDocumentWithRefs("tx_gov", HASH_A, "Governing Doc", 0, refs);
 
-        DAARegistry.ExternalReference[] memory stored = registry.getReferences(0, docId, v);
+        DocumentReference[] memory stored = registry.getReferences(0, docId, v);
         assertEq(stored.length, 1);
         assertEq(stored[0].relationType, 0);
         assertEq(stored[0].registryAddress, address(0xBEEF));
@@ -159,10 +160,10 @@ contract ForwardCompatTest is Test {
     // ──────────────── Scenario 4: All relationTypes 0–4 ──────
 
     function test_allRelationTypes_storedAndRetrieved() public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](5);
+        DocumentReference[] memory refs = new DocumentReference[](5);
 
         for (uint8 i = 0; i < 5; i++) {
-            refs[i] = DAARegistry.ExternalReference({
+            refs[i] = DocumentReference({
                 registryAddress: address(uint160(0x1000 + i)),
                 chainId: block.chainid,
                 categoryId: i,
@@ -175,7 +176,7 @@ contract ForwardCompatTest is Test {
 
         (uint256 docId, uint256 v) = _addDocumentWithRefs("tx_all_rel", HASH_A, "All Relations", 0, refs);
 
-        DAARegistry.ExternalReference[] memory stored = registry.getReferences(0, docId, v);
+        DocumentReference[] memory stored = registry.getReferences(0, docId, v);
         assertEq(stored.length, 5);
         for (uint8 i = 0; i < 5; i++) {
             assertEq(stored[i].relationType, i);
@@ -342,8 +343,8 @@ contract ForwardCompatTest is Test {
     // ──────────────── Fuzz: relationType any uint8 ───────────
 
     function testFuzz_relationType_anyValue(uint8 relationType) public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](1);
-        refs[0] = DAARegistry.ExternalReference({
+        DocumentReference[] memory refs = new DocumentReference[](1);
+        refs[0] = DocumentReference({
             registryAddress: address(0xDEAD),
             chainId: block.chainid,
             categoryId: 0,
@@ -361,8 +362,8 @@ contract ForwardCompatTest is Test {
     // ──────────────── targetSection round-trip ─────────────────
 
     function test_targetSection_emptyStringForWholeDocument() public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](1);
-        refs[0] = DAARegistry.ExternalReference({
+        DocumentReference[] memory refs = new DocumentReference[](1);
+        refs[0] = DocumentReference({
             registryAddress: address(0xBEEF),
             chainId: block.chainid,
             categoryId: 0,
@@ -377,8 +378,8 @@ contract ForwardCompatTest is Test {
     }
 
     function test_targetSection_specificSection() public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](1);
-        refs[0] = DAARegistry.ExternalReference({
+        DocumentReference[] memory refs = new DocumentReference[](1);
+        refs[0] = DocumentReference({
             registryAddress: address(0xBEEF),
             chainId: block.chainid,
             categoryId: 0,
@@ -393,8 +394,8 @@ contract ForwardCompatTest is Test {
     }
 
     function test_targetSection_multipleCommaSeparated() public {
-        DAARegistry.ExternalReference[] memory refs = new DAARegistry.ExternalReference[](1);
-        refs[0] = DAARegistry.ExternalReference({
+        DocumentReference[] memory refs = new DocumentReference[](1);
+        refs[0] = DocumentReference({
             registryAddress: address(0xBEEF),
             chainId: block.chainid,
             categoryId: 0,
