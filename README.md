@@ -25,7 +25,7 @@ First, many core DAO activities—raising public funds, creating monetary instru
 
 Second, the DAO concept presupposes the "American startup" as the key form of human organization (raising money in order to build technology). Most human affairs are not governed by startups.
 
-The most important problem of DAOs, however, is that they do not have legal personality. Assets in the real world are governed by laws, not ledger entries. Current DAOs therefore only affect "on-chain" assets and not anything in the real world.
+The most important problem of DAOs, however, is that they do not have legal personality. Assets in the real world are governed by laws, not ledger entries. DAOs therefore only govern "on-chain" assets. Attempts at improving real-wrold usability exist, and is known as "wrapping" (setting up legal entity managed by a DAO). But by doing so a DAO no longer is Decentralized and Autonomous, and the usefulness of these structures in real-world trade varies (limiting liability and regulatory compliance remain the main benefits).
 
 **How is the DAA different?**
 
