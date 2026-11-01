@@ -244,6 +244,24 @@ DAA is the third product in the Vattelum ecosystem. The smart contracts include 
 
 These fields are tested in `ForwardCompat.t.sol` (21 tests) to ensure they store and retrieve correctly.
 
+## Dependencies
+
+`apps/frontend/package.json` pins these transitive packages with `overrides`:
+
+| Override | Why it exists |
+|---|---|
+| `ox` 0.14.59 | Keeps `@wagmi/core` installable. Must follow the exact `ox` version `viem` requires, so update it with every `viem` bump. |
+| `elliptic` 6.6.1 | Patched version for audit findings through `@ardrive/turbo-sdk`. |
+| `secp256k1` 5.0.1 | Patched version for audit findings through `@ardrive/turbo-sdk`. |
+| `uuid` 11.1.1 (under `jayson`) | Patched version for an audit finding through `@ardrive/turbo-sdk`. |
+
+`npm audit` still reports findings:
+
+- **`bigint-buffer` (high):** comes from Turbo's Solana code, which ships in the bundle but which the app does not use (it uploads with `token: 'ethereum'`). There is no upstream fix.
+- **`elliptic` (low):** the remaining advisory has no patched release.
+- **`ws` and `stream-json`:** come through Turbo and have patched releases, but are not in the production bundle, so they are not overridden.
+- **Build tooling:** the rest come through development dependencies such as `vite` and `vite-plugin-node-polyfills`.
+
 ## License
 
 MIT
