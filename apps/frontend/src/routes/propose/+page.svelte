@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { readContract } from '@wagmi/core';
-	import { config } from '$lib/services/wallet-config';
-	import { daaRegistryConfig, daaRegistryAddress, coreStrategyAddress } from '$lib/contracts';
-	import { wallet } from '$lib/stores/wallet';
-	import { loadCategories as fetchCategories, loadDocuments, loadAmendmentRestrictions, loadDocumentBody, type CategoryInfo, type DocumentInfo } from '$lib/services/registry';
-	import Editor from '$lib/components/Editor.svelte';
+	import { config } from '#lib/services/wallet-config.ts';
+	import { daaRegistryConfig, daaRegistryAddress, coreStrategyAddress } from '#lib/contracts/index.ts';
+	import { wallet } from '#lib/stores/wallet.ts';
+	import { loadCategories as fetchCategories, loadDocuments, loadAmendmentRestrictions, loadDocumentBody, type CategoryInfo, type DocumentInfo } from '#lib/services/registry.ts';
+	import Editor from '#lib/components/Editor.svelte';
 	import {
 		type Section,
 		createSection,
@@ -16,14 +16,14 @@
 		wrapWithFrontmatter,
 		validateMarkdownUpload,
 		MarkdownUnsafeError
-	} from '$lib/services/markdown';
-	import { uploadDocument, verifyTurboHas } from '$lib/services/arweave';
-	import ProposalConfirmation, { type ProposalConfirmationData } from '$lib/components/ProposalConfirmation.svelte';
-	import ReviewModal from '$lib/components/ReviewModal.svelte';
-	import LoadingButton from '$lib/components/LoadingButton.svelte';
-	import { showToast } from '$lib/stores/toasts';
+	} from '#lib/services/markdown.ts';
+	import { uploadDocument, verifyTurboHas } from '#lib/services/arweave.ts';
+	import ProposalConfirmation, { type ProposalConfirmationData } from '#lib/components/ProposalConfirmation.svelte';
+	import ReviewModal from '#lib/components/ReviewModal.svelte';
+	import LoadingButton from '#lib/components/LoadingButton.svelte';
+	import { showToast } from '#lib/stores/toasts.ts';
 	import { hashBody, canonicalizeBody } from '@vattelum/document-registry-js';
-	import { hashToBytes32 } from '$lib/services/hash';
+	import { hashToBytes32 } from '#lib/services/hash.ts';
 	import {
 		DOC_TYPES,
 		DOC_TYPE_TO_RELATION,
@@ -32,18 +32,18 @@
 		requiresReferences,
 		allowsMultipleReferences,
 		supportsSectionTargeting
-	} from '$lib/constants/docTypes';
-	import { computeSectionNumber, sortByFixedNumber } from '$lib/services/markdown';
-	import type { TemplateVariable } from '$lib/services/template-variables';
-	import AmendmentRestrictions from '$lib/components/AmendmentRestrictions.svelte';
-	import TargetDocumentPicker from '$lib/components/TargetDocumentPicker.svelte';
-	import SectionTargetPicker from '$lib/components/SectionTargetPicker.svelte';
-	import { formatDate, formatCountdown } from '$lib/services/format';
-	import { createDraftStore } from '$lib/services/draft';
-	import { chainIdToLabel, explorerTxUrl } from '$lib/constants/networks';
+	} from '#lib/constants/docTypes.ts';
+	import { computeSectionNumber, sortByFixedNumber } from '#lib/services/markdown.ts';
+	import type { TemplateVariable } from '#lib/services/template-variables.ts';
+	import AmendmentRestrictions from '#lib/components/AmendmentRestrictions.svelte';
+	import TargetDocumentPicker from '#lib/components/TargetDocumentPicker.svelte';
+	import SectionTargetPicker from '#lib/components/SectionTargetPicker.svelte';
+	import { formatDate, formatCountdown } from '#lib/services/format.ts';
+	import { createDraftStore } from '#lib/services/draft.ts';
+	import { chainIdToLabel, explorerTxUrl } from '#lib/constants/networks.ts';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
-	import Tooltip from '$lib/components/Tooltip.svelte';
+	import Tooltip from '#lib/components/Tooltip.svelte';
 	import {
 		createProposal,
 		encodeAddDocumentTransaction,
@@ -52,7 +52,7 @@
 		selectStrategy,
 		strategyLabel,
 		type MetaTransaction
-	} from '$lib/services/snapshot-x';
+	} from '#lib/services/snapshot-x.ts';
 	const chainId = Number(import.meta.env.VITE_CHAIN_ID);
 
 	interface VersionInfo {
