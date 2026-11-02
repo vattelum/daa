@@ -129,7 +129,7 @@ You are free to select your own categories of legislation and voting strategies.
 
 #### Prerequisites
 
-- [Node.js](https://nodejs.org) 18+
+- [Node.js](https://nodejs.org) 22.17+ (required by SvelteKit 3)
 - [Foundry](https://getfoundry.sh) (for contract compilation, testing, and deployment)
 - An Ethereum wallet (MetaMask, Ledger, etc.)
 
