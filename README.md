@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.31-363636.svg)](https://soliditylang.org)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-133_passing-brightgreen.svg)](https://getfoundry.sh)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-140_passing-brightgreen.svg)](https://getfoundry.sh)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-Frontend-FF3E00.svg)](https://kit.svelte.dev)
 
 The Decentralized Autonomous Association (DAA) is a tool for decentralized law-making.
@@ -51,7 +51,7 @@ Any person with an Ethereum wallet can mint a soulbound membership token and joi
 
 Any token holder can draft legislation in the built-in editor, upload it to permanent storage, and submit it for a vote as an on-chain governance proposal. Members vote For, Against, or Abstain. Each vote is an on-chain transaction. When a proposal passes, any wallet can trigger execution, which records the ratified document in the on-chain registry through a Gnosis Safe.
 
-Because the law registry is based on the @vattelum package, any legislation your DAA produces can be referenced and govern application across the entire Ethereum ecosystem and every EVM compatible blockchain!
+Because the law registry is based on the @vattelum package, any legislation your DAA produces can be referenced and govern application across the entire Ethereum ecosystem and every EVM compatible blockchain! The package also defines how a law's text in force at a given moment is resolved from its amendments, repeals and revisions.
 
 ## Blockchain infrastructure
 
@@ -79,8 +79,8 @@ The frontend is a static SvelteKit application that connects directly to these c
 - `PercentageQuorumAvatarStrategy.sol` — Custom Snapshot X execution strategy with percentage-based approval threshold and participation quorum calculated from `DAAToken.totalSupply()`
 
 **Frontend** (SvelteKit, Tailwind CSS):
-- `/` — Public registry browser. Loads categories and documents from the contract, fetches full text from Arweave on demand.
-- `/propose` — Structured markdown editor with section numbering, amendment restriction configuration, Arweave upload, and on-chain proposal creation. Token holders only.
+- `/` — Public registry browser. Loads categories and documents from the contract, fetches full text from Arweave on demand. For each law, shows the text in force on any chosen date, with cite, export and copy.
+- `/propose` — Structured markdown editor with section numbering, amendment restriction configuration, Arweave upload, and on-chain proposal creation. Token holders only. Refuses headings outside the section format; an amendment adds new sections to its targets and asks before removing a targeted section it gives no text for.
 - `/admin` — Self-service token minting, resign membership (burn token), and paginated member list. Open to anyone.
 - `/vote` — Governance page. Active proposals with voting (For/Against/Abstain), passed proposals with execute button, collapsible history. Token holders vote.
 

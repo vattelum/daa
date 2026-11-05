@@ -25,6 +25,17 @@ export function formatISODate(iso: string): string {
 }
 
 /**
+ * Cutoff T for a date picked in <input type="date"> ("YYYY-MM-DD"): the last
+ * second of that day, UTC, in unix seconds. Null if the input is not a date.
+ */
+export function endOfDayUTC(iso: string): bigint | null {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+	if (!m) return null;
+	const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59);
+	return Number.isNaN(ms) ? null : BigInt(ms / 1000);
+}
+
+/**
  * Truncate an Ethereum address to "0xAbCd...EfGh" form.
  */
 export function truncAddr(addr: string): string {
